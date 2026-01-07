@@ -52,7 +52,8 @@
 // Menu IDs
 #define ID_TRAY_MENU_STATUS 1
 #define ID_TRAY_MENU_CONFIGURE 2
-#define ID_TRAY_MENU_EXIT 3
+#define ID_TRAY_MENU_LAUNCH 3
+#define ID_TRAY_MENU_EXIT 4
 
 // Dialog control IDs
 #define IDC_EDIT_CHROME_PATH 1001
@@ -170,6 +171,7 @@ static void RestartChrome(void);
 
 // Status
 static BOOL CheckChromeApiStatus(void);
+static void BringChromeToFront(void);
 static int CountActivePortForwards(void);
 static void UpdateStatus(void);
 
@@ -723,6 +725,7 @@ static void ShowContextMenu(HWND hwnd) {
     }
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_MENU_CONFIGURE, L"Configure");
+    AppendMenuW(hMenu, MF_STRING | (g_chromeRunning ? MF_GRAYED : 0), ID_TRAY_MENU_LAUNCH, L"Launch");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_MENU_EXIT, L"Exit");
 
@@ -908,8 +911,8 @@ static BOOL CreateTempDirectory(void) {
         return FALSE;
     }
 
-    // Generate unique directory name
-    swprintf_s(g_szTempDir, MAX_PATH, L"%schrome_debug_%u", tempPath, GetCurrentProcessId());
+    // Use fixed directory name for persistent profile
+    swprintf_s(g_szTempDir, MAX_PATH, L"%schrome_debug", tempPath);
 
     return CreateDirectoryW(g_szTempDir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
 }
@@ -1011,7 +1014,7 @@ static void TerminateChrome(void) {
     g_chromeRunning = FALSE;
 
     CleanupAllPortForwards();
-    RemoveTempDirectory();
+    // Profile directory is intentionally kept for persistence
 }
 
 static void RestartChrome(void) {
@@ -1019,6 +1022,62 @@ static void RestartChrome(void) {
     Sleep(500);  // Brief pause
     SetupPortForwards();
     LaunchChrome();
+}
+
+// ============================================================================
+// Chrome Window Management
+// ============================================================================
+
+static BOOL CALLBACK EnumChromeWindowsProc(HWND hwnd, LPARAM lParam) {
+    HWND* pFoundWindow = (HWND*)lParam;
+
+    // Check if window is visible
+    if (!IsWindowVisible(hwnd)) return TRUE;
+
+    // Get the process ID for this window
+    DWORD windowPID;
+    GetWindowThreadProcessId(hwnd, &windowPID);
+
+    // Check if this process is in our job object
+    if (g_hJob) {
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, windowPID);
+        if (hProcess) {
+            BOOL isInJob = FALSE;
+            IsProcessInJob(hProcess, g_hJob, &isInJob);
+            CloseHandle(hProcess);
+
+            if (isInJob) {
+                // Check if it's a Chrome main window (has title and is not a popup)
+                wchar_t className[256];
+                GetClassNameW(hwnd, className, 256);
+                if (wcscmp(className, L"Chrome_WidgetWin_1") == 0) {
+                    // Check if it has a title (main window, not child)
+                    wchar_t title[256];
+                    if (GetWindowTextW(hwnd, title, 256) > 0) {
+                        *pFoundWindow = hwnd;
+                        return FALSE;  // Stop enumeration
+                    }
+                }
+            }
+        }
+    }
+
+    return TRUE;  // Continue enumeration
+}
+
+static void BringChromeToFront(void) {
+    if (!g_chromeRunning || !g_hJob) return;
+
+    HWND chromeWindow = NULL;
+    EnumWindows(EnumChromeWindowsProc, (LPARAM)&chromeWindow);
+
+    if (chromeWindow) {
+        // Restore if minimized
+        if (IsIconic(chromeWindow)) {
+            ShowWindow(chromeWindow, SW_RESTORE);
+        }
+        SetForegroundWindow(chromeWindow);
+    }
 }
 
 // ============================================================================
@@ -1214,14 +1273,27 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
                 UpdateTrayTooltip();
             } else if (wParam == ID_TIMER_CHROME_EXIT) {
                 // Check if Chrome is still running by querying Job Object
-                // Don't check the main process - it exits quickly due to Chrome's architecture
                 if (g_hJob && g_chromeRunning) {
                     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION jobInfo;
                     if (QueryInformationJobObject(g_hJob, JobObjectBasicAccountingInformation,
                                                    &jobInfo, sizeof(jobInfo), NULL)) {
                         if (jobInfo.ActiveProcesses == 0) {
                             // All processes in the job have exited
+                            // Check exit code: 0 = graceful exit, non-zero = crash
+                            DWORD exitCode = 0;
+                            if (g_hChromeProcess) {
+                                GetExitCodeProcess(g_hChromeProcess, &exitCode);
+                            }
+
                             TerminateChrome();
+
+                            // Only restart on crash (non-zero exit code)
+                            if (exitCode != 0) {
+                                Sleep(500);
+                                SetupPortForwards();
+                                LaunchChrome();
+                            }
+
                             UpdateStatus();
                             UpdateTrayTooltip();
                         }
@@ -1233,7 +1305,7 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
         case WM_TRAYICON:
             switch (lParam) {
                 case WM_LBUTTONDBLCLK:
-                    ShowConfigDialog(hwnd);
+                    BringChromeToFront();
                     break;
                 case WM_RBUTTONUP:
                     ShowContextMenu(hwnd);
@@ -1245,6 +1317,14 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
             switch (LOWORD(wParam)) {
                 case ID_TRAY_MENU_CONFIGURE:
                     ShowConfigDialog(hwnd);
+                    return 0;
+                case ID_TRAY_MENU_LAUNCH:
+                    if (!g_chromeRunning && g_config.chromePath[0] != L'\0') {
+                        SetupPortForwards();
+                        LaunchChrome();
+                        UpdateStatus();
+                        UpdateTrayTooltip();
+                    }
                     return 0;
                 case ID_TRAY_MENU_EXIT:
                     PerformCleanup();
