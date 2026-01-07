@@ -1,0 +1,4 @@
+// Chrome Developer Launcher - Windows Resource File
+
+// Icon resource (ID 101 = IDI_TRAYICON)
+101 ICON "ChromeDevLauncher.ico"
