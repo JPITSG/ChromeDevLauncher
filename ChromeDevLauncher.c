@@ -13,6 +13,10 @@
 #define _WIN32_WINNT 0x0600
 #define WINVER 0x0600
 
+#ifndef OBJID_WINDOW
+#define OBJID_WINDOW 0
+#endif
+
 // Winsock must be included before windows.h
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -52,7 +56,6 @@
 // Menu IDs
 #define ID_TRAY_MENU_STATUS 1
 #define ID_TRAY_MENU_CONFIGURE 2
-#define ID_TRAY_MENU_LAUNCH 3
 #define ID_TRAY_MENU_EXIT 4
 
 // Dialog control IDs
@@ -129,6 +132,8 @@ static wchar_t g_szTempDir[MAX_PATH] = {0};
 // Status
 static StatusInfo g_status = {0};
 static BOOL g_chromeRunning = FALSE;
+static BOOL g_chromeHidden = TRUE;  // Start hidden, restore on tray double-click
+static HWINEVENTHOOK g_hWinEventHook = NULL;  // Hook for real-time window detection
 
 // ============================================================================
 // Forward Declarations
@@ -168,6 +173,8 @@ static void RemoveTempDirectory(void);
 static BOOL LaunchChrome(void);
 static void TerminateChrome(void);
 static void RestartChrome(void);
+static void InstallWinEventHook(void);
+static void RemoveWinEventHook(void);
 
 // Status
 static BOOL CheckChromeApiStatus(void);
@@ -205,7 +212,7 @@ static BOOL IsRunningAsAdmin(void) {
     BOOL isAdmin = FALSE;
     PSID adminGroup = NULL;
 
-    SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+    SID_IDENTIFIER_AUTHORITY ntAuthority = { SECURITY_NT_AUTHORITY };
     if (AllocateAndInitializeSid(&ntAuthority, 2,
             SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
             0, 0, 0, 0, 0, 0, &adminGroup)) {
@@ -725,8 +732,6 @@ static void ShowContextMenu(HWND hwnd) {
     }
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_MENU_CONFIGURE, L"Configure");
-    AppendMenuW(hMenu, MF_STRING | (g_chromeRunning ? MF_GRAYED : 0), ID_TRAY_MENU_LAUNCH, L"Launch");
-    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_MENU_EXIT, L"Exit");
 
     SetForegroundWindow(hwnd);
@@ -961,16 +966,18 @@ static BOOL LaunchChrome(void) {
     SetInformationJobObject(g_hJob, JobObjectExtendedLimitInformation,
                              &jobInfo, sizeof(jobInfo));
 
-    // Build command line
+    // Build command line - start off-screen so window is never visible
     wchar_t cmdLine[MAX_PATH * 2];
     swprintf_s(cmdLine, sizeof(cmdLine)/sizeof(wchar_t),
-               L"\"%s\" --remote-debugging-port=%d --user-data-dir=\"%s\"",
+               L"\"%s\" --remote-debugging-port=%d --user-data-dir=\"%s\" --window-position=-32000,-32000",
                g_config.chromePath, g_config.debugPort, g_szTempDir);
 
     // Launch Chrome
     STARTUPINFOW si = {0};
     PROCESS_INFORMATION pi = {0};
     si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;  // Start completely hidden
 
     BOOL success = CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE,
                                    CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED,
@@ -992,6 +999,10 @@ static BOOL LaunchChrome(void) {
     g_hChromeProcess = pi.hProcess;
     g_dwChromePID = pi.dwProcessId;
     g_chromeRunning = TRUE;
+    g_chromeHidden = TRUE;  // Start hidden on every launch
+
+    // Install real-time hook to catch any new windows
+    InstallWinEventHook();
 
     CloseHandle(pi.hThread);
 
@@ -999,6 +1010,9 @@ static BOOL LaunchChrome(void) {
 }
 
 static void TerminateChrome(void) {
+    // Remove window event hook
+    RemoveWinEventHook();
+
     if (g_hJob) {
         TerminateJobObject(g_hJob, 0);
         CloseHandle(g_hJob);
@@ -1025,20 +1039,87 @@ static void RestartChrome(void) {
 }
 
 // ============================================================================
-// Chrome Window Management
+// Chrome Taskbar Hiding
 // ============================================================================
 
-static BOOL CALLBACK EnumChromeWindowsProc(HWND hwnd, LPARAM lParam) {
-    HWND* pFoundWindow = (HWND*)lParam;
+// Real-time hook callback - fires when any window is shown
+static void CALLBACK WinEventProc(
+    HWINEVENTHOOK hWinEventHook,
+    DWORD event,
+    HWND hwnd,
+    LONG idObject,
+    LONG idChild,
+    DWORD idEventThread,
+    DWORD dwmsEventTime)
+{
+    (void)hWinEventHook;
+    (void)event;
+    (void)idChild;
+    (void)idEventThread;
+    (void)dwmsEventTime;
 
-    // Check if window is visible
-    if (!IsWindowVisible(hwnd)) return TRUE;
+    // Only care about window objects
+    if (idObject != OBJID_WINDOW || !hwnd) return;
+    if (!g_chromeHidden || !g_hJob) return;
 
-    // Get the process ID for this window
+    // Check if this window belongs to our Chrome job
     DWORD windowPID;
     GetWindowThreadProcessId(hwnd, &windowPID);
 
-    // Check if this process is in our job object
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, windowPID);
+    if (hProcess) {
+        BOOL isInJob = FALSE;
+        IsProcessInJob(hProcess, g_hJob, &isInJob);
+        CloseHandle(hProcess);
+
+        if (isInJob) {
+            wchar_t className[256];
+            GetClassNameW(hwnd, className, 256);
+            if (wcscmp(className, L"Chrome_WidgetWin_1") == 0) {
+                // Move off-screen immediately, then hide
+                SetWindowPos(hwnd, NULL, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                ShowWindow(hwnd, SW_HIDE);
+                LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                if (!(exStyle & WS_EX_TOOLWINDOW)) {
+                    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
+                }
+            }
+        }
+    }
+}
+
+static void InstallWinEventHook(void) {
+    if (g_hWinEventHook) return;  // Already installed
+
+    g_hWinEventHook = SetWinEventHook(
+        EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW,  // Only catch show events
+        NULL,                                   // No DLL
+        WinEventProc,                          // Callback
+        0,                                     // All processes
+        0,                                     // All threads
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+    );
+}
+
+static void RemoveWinEventHook(void) {
+    if (g_hWinEventHook) {
+        UnhookWinEvent(g_hWinEventHook);
+        g_hWinEventHook = NULL;
+    }
+}
+
+// ============================================================================
+// Chrome Window Management
+// ============================================================================
+
+static HWND g_lastChromeWindow = NULL;  // Track last window for SetForegroundWindow
+
+static BOOL CALLBACK RestoreChromeWindowsProc(HWND hwnd, LPARAM lParam) {
+    (void)lParam;
+
+    DWORD windowPID;
+    GetWindowThreadProcessId(hwnd, &windowPID);
+
     if (g_hJob) {
         HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, windowPID);
         if (hProcess) {
@@ -1047,36 +1128,54 @@ static BOOL CALLBACK EnumChromeWindowsProc(HWND hwnd, LPARAM lParam) {
             CloseHandle(hProcess);
 
             if (isInJob) {
-                // Check if it's a Chrome main window (has title and is not a popup)
                 wchar_t className[256];
                 GetClassNameW(hwnd, className, 256);
                 if (wcscmp(className, L"Chrome_WidgetWin_1") == 0) {
-                    // Check if it has a title (main window, not child)
+                    // Check if window is off-screen and move it back
+                    RECT rect;
+                    if (GetWindowRect(hwnd, &rect)) {
+                        if (rect.left < -10000 || rect.top < -10000) {
+                            // Move to center of screen
+                            int screenW = GetSystemMetrics(SM_CXSCREEN);
+                            int screenH = GetSystemMetrics(SM_CYSCREEN);
+                            int winW = rect.right - rect.left;
+                            int winH = rect.bottom - rect.top;
+                            int x = (screenW - winW) / 2;
+                            int y = (screenH - winH) / 2;
+                            SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+                        }
+                    }
+
+                    // Show and restore the window
+                    ShowWindow(hwnd, SW_SHOW);
+                    if (IsIconic(hwnd)) {
+                        ShowWindow(hwnd, SW_RESTORE);
+                    }
+                    // Track window with title as main window
                     wchar_t title[256];
                     if (GetWindowTextW(hwnd, title, 256) > 0) {
-                        *pFoundWindow = hwnd;
-                        return FALSE;  // Stop enumeration
+                        g_lastChromeWindow = hwnd;
                     }
                 }
             }
         }
     }
-
-    return TRUE;  // Continue enumeration
+    return TRUE;  // Continue enumeration to restore all windows
 }
 
 static void BringChromeToFront(void) {
     if (!g_chromeRunning || !g_hJob) return;
 
-    HWND chromeWindow = NULL;
-    EnumWindows(EnumChromeWindowsProc, (LPARAM)&chromeWindow);
+    // Mark as no longer hidden
+    g_chromeHidden = FALSE;
 
-    if (chromeWindow) {
-        // Restore if minimized
-        if (IsIconic(chromeWindow)) {
-            ShowWindow(chromeWindow, SW_RESTORE);
-        }
-        SetForegroundWindow(chromeWindow);
+    // Restore all Chrome windows
+    g_lastChromeWindow = NULL;
+    EnumWindows(RestoreChromeWindowsProc, 0);
+
+    // Bring the main window to front
+    if (g_lastChromeWindow) {
+        SetForegroundWindow(g_lastChromeWindow);
     }
 }
 
@@ -1279,19 +1378,28 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
                                                    &jobInfo, sizeof(jobInfo), NULL)) {
                         if (jobInfo.ActiveProcesses == 0) {
                             // All processes in the job have exited
-                            // Check exit code: 0 = graceful exit, non-zero = crash
-                            DWORD exitCode = 0;
-                            if (g_hChromeProcess) {
-                                GetExitCodeProcess(g_hChromeProcess, &exitCode);
-                            }
-
                             TerminateChrome();
 
-                            // Only restart on crash (non-zero exit code)
-                            if (exitCode != 0) {
+                            // Always attempt relaunch with fresh firewall rules
+                            // First validate the chrome path exists
+                            BOOL canRelaunch = FALSE;
+                            if (g_config.chromePath[0] != L'\0') {
+                                DWORD attrs = GetFileAttributesW(g_config.chromePath);
+                                if (attrs != INVALID_FILE_ATTRIBUTES &&
+                                    !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+                                    canRelaunch = TRUE;
+                                }
+                            }
+
+                            if (canRelaunch) {
                                 Sleep(500);
+                                // Reset firewall rules (remove and re-add)
+                                CleanupAllPortForwards();
                                 SetupPortForwards();
-                                LaunchChrome();
+                                if (!LaunchChrome()) {
+                                    // Launch failed - don't retry
+                                    CleanupAllPortForwards();
+                                }
                             }
 
                             UpdateStatus();
@@ -1317,14 +1425,6 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
             switch (LOWORD(wParam)) {
                 case ID_TRAY_MENU_CONFIGURE:
                     ShowConfigDialog(hwnd);
-                    return 0;
-                case ID_TRAY_MENU_LAUNCH:
-                    if (!g_chromeRunning && g_config.chromePath[0] != L'\0') {
-                        SetupPortForwards();
-                        LaunchChrome();
-                        UpdateStatus();
-                        UpdateTrayTooltip();
-                    }
                     return 0;
                 case ID_TRAY_MENU_EXIT:
                     PerformCleanup();
