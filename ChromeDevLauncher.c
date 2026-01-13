@@ -58,6 +58,9 @@
 #define ID_TRAY_MENU_CONFIGURE 2
 #define ID_TRAY_MENU_EXIT 4
 
+// Custom messages
+#define WM_BRING_CHROME_TO_FRONT (WM_USER + 100)
+
 // Dialog control IDs
 #define IDC_EDIT_CHROME_PATH 1001
 #define IDC_BTN_BROWSE 1002
@@ -195,10 +198,11 @@ static LONG WINAPI ExceptionHandler(EXCEPTION_POINTERS* exInfo);
 static BOOL EnforceSingleInstance(void) {
     g_hMutex = CreateMutexW(NULL, TRUE, MUTEX_NAME);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        MessageBoxW(NULL,
-            L"Chrome Developer Launcher is already running.\n\n"
-            L"Check your system tray for the application icon.",
-            L"Already Running", MB_OK | MB_ICONINFORMATION);
+        // Find the existing instance's window and tell it to show Chrome
+        HWND hwndExisting = FindWindowW(L"ChromeDevLauncherClass", NULL);
+        if (hwndExisting) {
+            PostMessage(hwndExisting, WM_BRING_CHROME_TO_FRONT, 0, 0);
+        }
         return FALSE;
     }
     return TRUE;
@@ -1432,6 +1436,10 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
                     return 0;
             }
             break;
+
+        case WM_BRING_CHROME_TO_FRONT:
+            BringChromeToFront();
+            return 0;
 
         case WM_DESTROY:
             KillTimer(hwnd, ID_TIMER_STATUS_CHECK);
