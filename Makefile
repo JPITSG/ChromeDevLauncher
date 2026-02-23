@@ -19,8 +19,12 @@ all: $(TARGET)
 $(RELEASE_DIR):
 	mkdir -p $(RELEASE_DIR)
 
+# Build frontend assets
+assets/dist/index.html:
+	cd assets && npm install && npm run build
+
 # Compile resource file
-$(RES_OBJ): $(RC) ChromeDevLauncher.ico
+$(RES_OBJ): $(RC) assets/icon.ico assets/dist/index.html assets/WebView2Loader.dll
 	$(WINDRES) $< -o $@
 
 # Link final executable
@@ -29,4 +33,4 @@ $(TARGET): $(SRC) $(RES_OBJ) | $(RELEASE_DIR)
 	@echo "Build complete: $(TARGET)"
 
 clean:
-	rm -rf $(RELEASE_DIR) *.o
+	rm -rf $(RELEASE_DIR) *.o assets/dist assets/node_modules

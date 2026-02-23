@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <objbase.h>
 
 // ============================================================================
 // Constants and Definitions
@@ -61,21 +62,16 @@
 // Custom messages
 #define WM_BRING_CHROME_TO_FRONT (WM_USER + 100)
 
-// Dialog control IDs
-#define IDC_EDIT_CHROME_PATH 1001
-#define IDC_BTN_BROWSE 1002
-#define IDC_EDIT_DEBUG_PORT 1003
-#define IDC_EDIT_CONNECT_ADDR 1004
-#define IDC_EDIT_STATUS_INTERVAL 1005
-#define IDC_STATIC_CHROME_PATH 1006
-#define IDC_STATIC_DEBUG_PORT 1007
-#define IDC_STATIC_CONNECT_ADDR 1008
-#define IDC_STATIC_STATUS_INTERVAL 1009
+// Resource IDs
+#define IDR_HTML_UI      200
+#define IDR_WEBVIEW2_DLL 201
 
 // Timers
 #define ID_TIMER_STATUS_CHECK 1
 #define ID_TIMER_CHROME_EXIT 2
 #define CHROME_EXIT_CHECK_INTERVAL 1000
+#define ID_TIMER_WEBVIEW_SHOW_FALLBACK 1006
+#define WEBVIEW_SHOW_FALLBACK_DELAY_MS 350
 
 // Limits
 #define MAX_INTERFACES 32
@@ -139,6 +135,238 @@ static BOOL g_chromeHidden = TRUE;  // Start hidden, restore on tray double-clic
 static HWINEVENTHOOK g_hWinEventHook = NULL;  // Hook for real-time window detection
 
 // ============================================================================
+// WebView2 COM interface definitions (minimal vtable approach)
+// ============================================================================
+
+// GUIDs
+DEFINE_GUID(IID_ICoreWebView2Environment, 0xb96d755e,0x0319,0x4e92,0xa2,0x96,0x23,0x43,0x6f,0x46,0xa1,0xfc);
+DEFINE_GUID(IID_ICoreWebView2Controller, 0x4d00c0d1,0x9583,0x4f38,0x8e,0x50,0xa9,0xa6,0xb3,0x44,0x78,0xcd);
+DEFINE_GUID(IID_ICoreWebView2, 0x76eceacb,0x0462,0x4d94,0xac,0x83,0x42,0x3a,0x67,0x93,0x77,0x5e);
+DEFINE_GUID(IID_ICoreWebView2Settings, 0xe562e4f0,0xd7fa,0x43ac,0x8d,0x71,0xc0,0x51,0x50,0x49,0x9f,0x00);
+
+typedef struct EventRegistrationToken { __int64 value; } EventRegistrationToken;
+
+// Forward declarations of COM interfaces
+typedef struct ICoreWebView2Environment ICoreWebView2Environment;
+typedef struct ICoreWebView2Controller ICoreWebView2Controller;
+typedef struct ICoreWebView2 ICoreWebView2;
+typedef struct ICoreWebView2Settings ICoreWebView2Settings;
+typedef struct ICoreWebView2WebMessageReceivedEventArgs ICoreWebView2WebMessageReceivedEventArgs;
+typedef struct ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler;
+typedef struct ICoreWebView2CreateCoreWebView2ControllerCompletedHandler ICoreWebView2CreateCoreWebView2ControllerCompletedHandler;
+typedef struct ICoreWebView2WebMessageReceivedEventHandler ICoreWebView2WebMessageReceivedEventHandler;
+
+// ICoreWebView2Environment vtable
+typedef struct ICoreWebView2EnvironmentVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(ICoreWebView2Environment*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(ICoreWebView2Environment*);
+    ULONG   (STDMETHODCALLTYPE *Release)(ICoreWebView2Environment*);
+    HRESULT (STDMETHODCALLTYPE *CreateCoreWebView2Controller)(ICoreWebView2Environment*, HWND, ICoreWebView2CreateCoreWebView2ControllerCompletedHandler*);
+    HRESULT (STDMETHODCALLTYPE *CreateWebResourceResponse)(ICoreWebView2Environment*, void*, int, LPCWSTR, LPCWSTR, void**);
+    HRESULT (STDMETHODCALLTYPE *get_BrowserVersionString)(ICoreWebView2Environment*, LPWSTR*);
+    HRESULT (STDMETHODCALLTYPE *add_NewBrowserVersionAvailable)(ICoreWebView2Environment*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_NewBrowserVersionAvailable)(ICoreWebView2Environment*, EventRegistrationToken);
+} ICoreWebView2EnvironmentVtbl;
+
+struct ICoreWebView2Environment { const ICoreWebView2EnvironmentVtbl *lpVtbl; };
+
+// ICoreWebView2Controller vtable
+typedef struct ICoreWebView2ControllerVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(ICoreWebView2Controller*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(ICoreWebView2Controller*);
+    ULONG   (STDMETHODCALLTYPE *Release)(ICoreWebView2Controller*);
+    HRESULT (STDMETHODCALLTYPE *get_IsVisible)(ICoreWebView2Controller*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *put_IsVisible)(ICoreWebView2Controller*, BOOL);
+    HRESULT (STDMETHODCALLTYPE *get_Bounds)(ICoreWebView2Controller*, RECT*);
+    HRESULT (STDMETHODCALLTYPE *put_Bounds)(ICoreWebView2Controller*, RECT);
+    HRESULT (STDMETHODCALLTYPE *get_ZoomFactor)(ICoreWebView2Controller*, double*);
+    HRESULT (STDMETHODCALLTYPE *put_ZoomFactor)(ICoreWebView2Controller*, double);
+    HRESULT (STDMETHODCALLTYPE *add_ZoomFactorChanged)(ICoreWebView2Controller*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_ZoomFactorChanged)(ICoreWebView2Controller*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *SetBoundsAndZoomFactor)(ICoreWebView2Controller*, RECT, double);
+    HRESULT (STDMETHODCALLTYPE *MoveFocus)(ICoreWebView2Controller*, int);
+    HRESULT (STDMETHODCALLTYPE *add_MoveFocusRequested)(ICoreWebView2Controller*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_MoveFocusRequested)(ICoreWebView2Controller*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_GotFocus)(ICoreWebView2Controller*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_GotFocus)(ICoreWebView2Controller*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_LostFocus)(ICoreWebView2Controller*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_LostFocus)(ICoreWebView2Controller*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_AcceleratorKeyPressed)(ICoreWebView2Controller*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_AcceleratorKeyPressed)(ICoreWebView2Controller*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *get_ParentWindow)(ICoreWebView2Controller*, HWND*);
+    HRESULT (STDMETHODCALLTYPE *put_ParentWindow)(ICoreWebView2Controller*, HWND);
+    HRESULT (STDMETHODCALLTYPE *NotifyParentWindowPositionChanged)(ICoreWebView2Controller*);
+    HRESULT (STDMETHODCALLTYPE *Close)(ICoreWebView2Controller*);
+    HRESULT (STDMETHODCALLTYPE *get_CoreWebView2)(ICoreWebView2Controller*, ICoreWebView2**);
+} ICoreWebView2ControllerVtbl;
+
+struct ICoreWebView2Controller { const ICoreWebView2ControllerVtbl *lpVtbl; };
+
+// ICoreWebView2 vtable (full table required)
+typedef struct ICoreWebView2Vtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(ICoreWebView2*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(ICoreWebView2*);
+    ULONG   (STDMETHODCALLTYPE *Release)(ICoreWebView2*);
+    HRESULT (STDMETHODCALLTYPE *get_Settings)(ICoreWebView2*, ICoreWebView2Settings**);
+    HRESULT (STDMETHODCALLTYPE *get_Source)(ICoreWebView2*, LPWSTR*);
+    HRESULT (STDMETHODCALLTYPE *Navigate)(ICoreWebView2*, LPCWSTR);
+    HRESULT (STDMETHODCALLTYPE *NavigateToString)(ICoreWebView2*, LPCWSTR);
+    HRESULT (STDMETHODCALLTYPE *add_NavigationStarting)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_NavigationStarting)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_ContentLoading)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_ContentLoading)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_SourceChanged)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_SourceChanged)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_HistoryChanged)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_HistoryChanged)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_NavigationCompleted)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_NavigationCompleted)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_FrameNavigationStarting)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_FrameNavigationStarting)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_FrameNavigationCompleted)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_FrameNavigationCompleted)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_ScriptDialogOpening)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_ScriptDialogOpening)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_PermissionRequested)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_PermissionRequested)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_ProcessFailed)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_ProcessFailed)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *AddScriptToExecuteOnDocumentCreated)(ICoreWebView2*, LPCWSTR, void*);
+    HRESULT (STDMETHODCALLTYPE *RemoveScriptToExecuteOnDocumentCreated)(ICoreWebView2*, LPCWSTR);
+    HRESULT (STDMETHODCALLTYPE *ExecuteScript)(ICoreWebView2*, LPCWSTR, void*);
+    HRESULT (STDMETHODCALLTYPE *CapturePreview)(ICoreWebView2*, int, void*, void*);
+    HRESULT (STDMETHODCALLTYPE *Reload)(ICoreWebView2*);
+    HRESULT (STDMETHODCALLTYPE *PostWebMessageAsJson)(ICoreWebView2*, LPCWSTR);
+    HRESULT (STDMETHODCALLTYPE *PostWebMessageAsString)(ICoreWebView2*, LPCWSTR);
+    HRESULT (STDMETHODCALLTYPE *add_WebMessageReceived)(ICoreWebView2*, ICoreWebView2WebMessageReceivedEventHandler*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_WebMessageReceived)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *CallDevToolsProtocolMethod)(ICoreWebView2*, LPCWSTR, LPCWSTR, void*);
+    HRESULT (STDMETHODCALLTYPE *get_BrowserProcessId)(ICoreWebView2*, UINT32*);
+    HRESULT (STDMETHODCALLTYPE *get_CanGoBack)(ICoreWebView2*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *get_CanGoForward)(ICoreWebView2*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *GoBack)(ICoreWebView2*);
+    HRESULT (STDMETHODCALLTYPE *GoForward)(ICoreWebView2*);
+    HRESULT (STDMETHODCALLTYPE *GetDevToolsProtocolEventReceiver)(ICoreWebView2*, LPCWSTR, void**);
+    HRESULT (STDMETHODCALLTYPE *Stop)(ICoreWebView2*);
+    HRESULT (STDMETHODCALLTYPE *add_NewWindowRequested)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_NewWindowRequested)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *add_DocumentTitleChanged)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_DocumentTitleChanged)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *get_DocumentTitle)(ICoreWebView2*, LPWSTR*);
+    HRESULT (STDMETHODCALLTYPE *AddHostObjectToScript)(ICoreWebView2*, LPCWSTR, void*);
+    HRESULT (STDMETHODCALLTYPE *RemoveHostObjectFromScript)(ICoreWebView2*, LPCWSTR);
+    HRESULT (STDMETHODCALLTYPE *OpenDevToolsWindow)(ICoreWebView2*);
+    HRESULT (STDMETHODCALLTYPE *add_ContainsFullScreenElementChanged)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_ContainsFullScreenElementChanged)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *get_ContainsFullScreenElement)(ICoreWebView2*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *add_WebResourceRequested)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_WebResourceRequested)(ICoreWebView2*, EventRegistrationToken);
+    HRESULT (STDMETHODCALLTYPE *AddWebResourceRequestedFilter)(ICoreWebView2*, LPCWSTR, int);
+    HRESULT (STDMETHODCALLTYPE *RemoveWebResourceRequestedFilter)(ICoreWebView2*, LPCWSTR, int);
+    HRESULT (STDMETHODCALLTYPE *add_WindowCloseRequested)(ICoreWebView2*, void*, EventRegistrationToken*);
+    HRESULT (STDMETHODCALLTYPE *remove_WindowCloseRequested)(ICoreWebView2*, EventRegistrationToken);
+} ICoreWebView2Vtbl;
+
+struct ICoreWebView2 { const ICoreWebView2Vtbl *lpVtbl; };
+
+// ICoreWebView2Settings vtable
+typedef struct ICoreWebView2SettingsVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(ICoreWebView2Settings*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(ICoreWebView2Settings*);
+    ULONG   (STDMETHODCALLTYPE *Release)(ICoreWebView2Settings*);
+    HRESULT (STDMETHODCALLTYPE *get_IsScriptEnabled)(ICoreWebView2Settings*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *put_IsScriptEnabled)(ICoreWebView2Settings*, BOOL);
+    HRESULT (STDMETHODCALLTYPE *get_IsWebMessageEnabled)(ICoreWebView2Settings*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *put_IsWebMessageEnabled)(ICoreWebView2Settings*, BOOL);
+    HRESULT (STDMETHODCALLTYPE *get_AreDefaultScriptDialogsEnabled)(ICoreWebView2Settings*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *put_AreDefaultScriptDialogsEnabled)(ICoreWebView2Settings*, BOOL);
+    HRESULT (STDMETHODCALLTYPE *get_IsStatusBarEnabled)(ICoreWebView2Settings*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *put_IsStatusBarEnabled)(ICoreWebView2Settings*, BOOL);
+    HRESULT (STDMETHODCALLTYPE *get_AreDevToolsEnabled)(ICoreWebView2Settings*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *put_AreDevToolsEnabled)(ICoreWebView2Settings*, BOOL);
+    HRESULT (STDMETHODCALLTYPE *get_AreDefaultContextMenusEnabled)(ICoreWebView2Settings*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *put_AreDefaultContextMenusEnabled)(ICoreWebView2Settings*, BOOL);
+    HRESULT (STDMETHODCALLTYPE *get_AreHostObjectsAllowed)(ICoreWebView2Settings*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *put_AreHostObjectsAllowed)(ICoreWebView2Settings*, BOOL);
+    HRESULT (STDMETHODCALLTYPE *get_IsZoomControlEnabled)(ICoreWebView2Settings*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *put_IsZoomControlEnabled)(ICoreWebView2Settings*, BOOL);
+    HRESULT (STDMETHODCALLTYPE *get_IsBuiltInErrorPageEnabled)(ICoreWebView2Settings*, BOOL*);
+    HRESULT (STDMETHODCALLTYPE *put_IsBuiltInErrorPageEnabled)(ICoreWebView2Settings*, BOOL);
+} ICoreWebView2SettingsVtbl;
+
+struct ICoreWebView2Settings { const ICoreWebView2SettingsVtbl *lpVtbl; };
+
+// ICoreWebView2WebMessageReceivedEventArgs vtable
+typedef struct ICoreWebView2WebMessageReceivedEventArgsVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(ICoreWebView2WebMessageReceivedEventArgs*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(ICoreWebView2WebMessageReceivedEventArgs*);
+    ULONG   (STDMETHODCALLTYPE *Release)(ICoreWebView2WebMessageReceivedEventArgs*);
+    HRESULT (STDMETHODCALLTYPE *get_Source)(ICoreWebView2WebMessageReceivedEventArgs*, LPWSTR*);
+    HRESULT (STDMETHODCALLTYPE *get_WebMessageAsJson)(ICoreWebView2WebMessageReceivedEventArgs*, LPWSTR*);
+    HRESULT (STDMETHODCALLTYPE *TryGetWebMessageAsString)(ICoreWebView2WebMessageReceivedEventArgs*, LPWSTR*);
+} ICoreWebView2WebMessageReceivedEventArgsVtbl;
+
+struct ICoreWebView2WebMessageReceivedEventArgs { const ICoreWebView2WebMessageReceivedEventArgsVtbl *lpVtbl; };
+
+// ============================================================================
+// COM callback handler types
+// ============================================================================
+
+typedef struct EnvironmentCompletedHandlerVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
+    ULONG   (STDMETHODCALLTYPE *Release)(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
+    HRESULT (STDMETHODCALLTYPE *Invoke)(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*, HRESULT, ICoreWebView2Environment*);
+} EnvironmentCompletedHandlerVtbl;
+
+struct ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler {
+    const EnvironmentCompletedHandlerVtbl *lpVtbl;
+    ULONG refCount;
+};
+
+typedef struct ControllerCompletedHandlerVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler*);
+    ULONG   (STDMETHODCALLTYPE *Release)(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler*);
+    HRESULT (STDMETHODCALLTYPE *Invoke)(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler*, HRESULT, ICoreWebView2Controller*);
+} ControllerCompletedHandlerVtbl;
+
+struct ICoreWebView2CreateCoreWebView2ControllerCompletedHandler {
+    const ControllerCompletedHandlerVtbl *lpVtbl;
+    ULONG refCount;
+};
+
+typedef struct WebMessageReceivedHandlerVtbl {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(ICoreWebView2WebMessageReceivedEventHandler*, REFIID, void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(ICoreWebView2WebMessageReceivedEventHandler*);
+    ULONG   (STDMETHODCALLTYPE *Release)(ICoreWebView2WebMessageReceivedEventHandler*);
+    HRESULT (STDMETHODCALLTYPE *Invoke)(ICoreWebView2WebMessageReceivedEventHandler*, ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs*);
+} WebMessageReceivedHandlerVtbl;
+
+struct ICoreWebView2WebMessageReceivedEventHandler {
+    const WebMessageReceivedHandlerVtbl *lpVtbl;
+    ULONG refCount;
+};
+
+// ============================================================================
+// WebView2 globals
+// ============================================================================
+
+static HWND g_webviewHwnd = NULL;
+static ICoreWebView2Environment *g_webviewEnv = NULL;
+static ICoreWebView2Controller *g_webviewController = NULL;
+static ICoreWebView2 *g_webviewView = NULL;
+static BOOL g_webviewWindowShown = FALSE;
+static BOOL g_configChanged = FALSE;
+
+typedef HRESULT (STDAPICALLTYPE *PFN_CreateCoreWebView2EnvironmentWithOptions)(
+    LPCWSTR browserExecutableFolder, LPCWSTR userDataFolder, void* options,
+    ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler* handler);
+
+static PFN_CreateCoreWebView2EnvironmentWithOptions fnCreateEnvironment = NULL;
+static WCHAR g_extractedDllPath[MAX_PATH] = {0};
+
+// ============================================================================
 // Forward Declarations
 // ============================================================================
 
@@ -154,7 +382,6 @@ static BOOL SaveConfigToRegistry(const Configuration* config);
 static BOOL IsFirstLaunch(void);
 static void MarkAsConfigured(void);
 static void SetDefaultConfig(Configuration* config);
-static INT_PTR CALLBACK ConfigDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 static BOOL ShowConfigDialog(HWND hwndParent);
 
 // Tray icon
@@ -358,296 +585,526 @@ static void MarkAsConfigured(void) {
 }
 
 // ============================================================================
-// Configuration Dialog
+// WebView2 Helper Functions
 // ============================================================================
 
-static INT_PTR CALLBACK ConfigDialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
-    static Configuration* pTempConfig = NULL;
+static BOOL load_webview2_loader(void) {
+    HRSRC hRes = FindResource(NULL, MAKEINTRESOURCE(IDR_WEBVIEW2_DLL), RT_RCDATA);
+    if (!hRes) {
+        MessageBoxW(NULL, L"Failed to find WebView2Loader.dll in embedded resources.\n"
+            L"The executable may need to be rebuilt.", L"Chrome Developer Launcher", MB_ICONERROR);
+        return FALSE;
+    }
+    HGLOBAL hData = LoadResource(NULL, hRes);
+    DWORD dllSize = SizeofResource(NULL, hRes);
+    const void *dllBytes = LockResource(hData);
+    if (!dllBytes || dllSize == 0) {
+        MessageBoxW(NULL, L"Failed to load WebView2Loader.dll from embedded resources.",
+            L"Chrome Developer Launcher", MB_ICONERROR);
+        return FALSE;
+    }
+    WCHAR tempDir[MAX_PATH];
+    DWORD tempLen = GetTempPathW(MAX_PATH, tempDir);
+    if (tempLen == 0 || tempLen >= MAX_PATH - 50) {
+        MessageBoxW(NULL, L"Failed to get temp directory path.", L"Chrome Developer Launcher", MB_ICONERROR);
+        return FALSE;
+    }
+    // Use a ChromeDevLauncher-specific subdirectory to avoid conflicts
+    swprintf(g_extractedDllPath, MAX_PATH, L"%sChromeDevLauncher", tempDir);
+    CreateDirectoryW(g_extractedDllPath, NULL);
+    swprintf(g_extractedDllPath, MAX_PATH, L"%sChromeDevLauncher\\WebView2Loader.dll", tempDir);
 
-    switch (message) {
-        case WM_INITDIALOG: {
-            pTempConfig = (Configuration*)lParam;
-            if (!pTempConfig) return FALSE;
-
-            // Set edit control text
-            SetDlgItemTextW(hDlg, IDC_EDIT_CHROME_PATH, pTempConfig->chromePath);
-            SetDlgItemInt(hDlg, IDC_EDIT_DEBUG_PORT, pTempConfig->debugPort, FALSE);
-            SetDlgItemTextW(hDlg, IDC_EDIT_CONNECT_ADDR, pTempConfig->connectAddress);
-            SetDlgItemInt(hDlg, IDC_EDIT_STATUS_INTERVAL, pTempConfig->statusCheckInterval, FALSE);
-
-            // Center dialog on screen
-            RECT rcDlg, rcScreen;
-            GetWindowRect(hDlg, &rcDlg);
-            SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcScreen, 0);
-            int x = rcScreen.left + ((rcScreen.right - rcScreen.left) - (rcDlg.right - rcDlg.left)) / 2;
-            int y = rcScreen.top + ((rcScreen.bottom - rcScreen.top) - (rcDlg.bottom - rcDlg.top)) / 2;
-            SetWindowPos(hDlg, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
-
-            return TRUE;
+    // Try to load existing copy first (may already be extracted from a previous run)
+    HMODULE hMod = LoadLibraryW(g_extractedDllPath);
+    if (!hMod) {
+        // Extract fresh copy
+        HANDLE hFile = CreateFileW(g_extractedDllPath, GENERIC_WRITE, 0, NULL,
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile == INVALID_HANDLE_VALUE) {
+            WCHAR msg[512];
+            swprintf(msg, 512, L"Failed to write WebView2Loader.dll to temp directory.\n\n"
+                L"Path: %s\nError: %lu", g_extractedDllPath, GetLastError());
+            MessageBoxW(NULL, msg, L"Chrome Developer Launcher", MB_ICONERROR);
+            return FALSE;
         }
+        DWORD written = 0;
+        WriteFile(hFile, dllBytes, dllSize, &written, NULL);
+        CloseHandle(hFile);
+        if (written != dllSize) {
+            MessageBoxW(NULL, L"Failed to write complete WebView2Loader.dll to temp directory.",
+                L"Chrome Developer Launcher", MB_ICONERROR);
+            return FALSE;
+        }
+        hMod = LoadLibraryW(g_extractedDllPath);
+    }
+    if (!hMod) {
+        WCHAR msg[512];
+        swprintf(msg, 512, L"Failed to load WebView2Loader.dll.\n\n"
+            L"Path: %s\nError: %lu", g_extractedDllPath, GetLastError());
+        MessageBoxW(NULL, msg, L"Chrome Developer Launcher", MB_ICONERROR);
+        return FALSE;
+    }
+    fnCreateEnvironment = (PFN_CreateCoreWebView2EnvironmentWithOptions)
+        GetProcAddress(hMod, "CreateCoreWebView2EnvironmentWithOptions");
+    if (!fnCreateEnvironment) {
+        MessageBoxW(NULL, L"WebView2Loader.dll loaded but CreateCoreWebView2EnvironmentWithOptions not found.\n\n"
+            L"The DLL may be corrupted or the wrong version.", L"Chrome Developer Launcher", MB_ICONERROR);
+        return FALSE;
+    }
+    return TRUE;
+}
 
-        case WM_COMMAND:
-            switch (LOWORD(wParam)) {
-                case IDC_BTN_BROWSE: {
-                    OPENFILENAMEW ofn = {0};
-                    wchar_t szFile[MAX_PATH] = {0};
-                    GetDlgItemTextW(hDlg, IDC_EDIT_CHROME_PATH, szFile, MAX_PATH);
+static void webview_execute_script(const wchar_t* script) {
+    if (g_webviewView) {
+        g_webviewView->lpVtbl->ExecuteScript(g_webviewView, script, NULL);
+    }
+}
 
-                    ofn.lStructSize = sizeof(ofn);
-                    ofn.hwndOwner = hDlg;
-                    ofn.lpstrFile = szFile;
-                    ofn.nMaxFile = MAX_PATH;
-                    ofn.lpstrFilter = L"Executable Files (*.exe)\0*.exe\0All Files (*.*)\0*.*\0";
-                    ofn.nFilterIndex = 1;
-                    ofn.lpstrTitle = L"Select Chrome Executable";
-                    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+static void webview_sync_controller_bounds(void) {
+    if (!g_webviewController || !g_webviewHwnd) return;
+    RECT bounds;
+    GetClientRect(g_webviewHwnd, &bounds);
+    g_webviewController->lpVtbl->put_Bounds(g_webviewController, bounds);
+    g_webviewController->lpVtbl->put_IsVisible(g_webviewController, TRUE);
+}
 
-                    if (GetOpenFileNameW(&ofn)) {
-                        SetDlgItemTextW(hDlg, IDC_EDIT_CHROME_PATH, szFile);
-                    }
-                    return TRUE;
+// Minimal JSON parser helpers
+static BOOL json_get_string(const char *json, const char *key, char *out, size_t outLen) {
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return FALSE;
+    p += strlen(search);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p != '"') return FALSE;
+    p++;
+    size_t i = 0;
+    while (*p && *p != '"' && i < outLen - 1) {
+        out[i++] = *p++;
+    }
+    out[i] = '\0';
+    return TRUE;
+}
+
+static BOOL json_get_int(const char *json, const char *key, int *out) {
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return FALSE;
+    p += strlen(search);
+    while (*p == ' ' || *p == ':') p++;
+    *out = atoi(p);
+    return TRUE;
+}
+
+// Escape a wide-char string for safe JSON embedding
+static void json_escape_wstring(const wchar_t *in, wchar_t *out, size_t outLen) {
+    size_t j = 0;
+    for (size_t i = 0; in[i] && j < outLen - 2; i++) {
+        wchar_t c = in[i];
+        if (c == L'"' || c == L'\\') {
+            if (j + 2 >= outLen) break;
+            out[j++] = L'\\';
+            out[j++] = c;
+        } else if (c == L'\n') {
+            if (j + 2 >= outLen) break;
+            out[j++] = L'\\';
+            out[j++] = L'n';
+        } else if (c == L'\r') {
+            if (j + 2 >= outLen) break;
+            out[j++] = L'\\';
+            out[j++] = L'r';
+        } else {
+            out[j++] = c;
+        }
+    }
+    out[j] = L'\0';
+}
+
+// ============================================================================
+// Push functions (C -> JS)
+// ============================================================================
+
+static void webview_push_init_config(void) {
+    wchar_t wPath[MAX_PATH * 2];
+    json_escape_wstring(g_config.chromePath, wPath, MAX_PATH * 2);
+    wchar_t wAddr[128];
+    json_escape_wstring(g_config.connectAddress, wAddr, 128);
+    wchar_t script[4096];
+    swprintf(script, 4096,
+        L"window.onInit({\"view\":\"config\",\"config\":{\"chromePath\":\"%s\",\"debugPort\":%d,\"connectAddress\":\"%s\",\"statusCheckInterval\":%d}})",
+        wPath, g_config.debugPort, wAddr, g_config.statusCheckInterval);
+    webview_execute_script(script);
+}
+
+static void webview_push_browse_result(const wchar_t* path) {
+    wchar_t wPath[MAX_PATH * 2];
+    json_escape_wstring(path, wPath, MAX_PATH * 2);
+    wchar_t script[MAX_PATH * 2 + 128];
+    swprintf(script, sizeof(script) / sizeof(wchar_t),
+        L"window.onBrowseResult({\"path\":\"%s\"})", wPath);
+    webview_execute_script(script);
+}
+
+// ============================================================================
+// COM callback handler implementations
+// ============================================================================
+
+static HRESULT STDMETHODCALLTYPE EnvCompleted_Invoke(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*, HRESULT, ICoreWebView2Environment*);
+static HRESULT STDMETHODCALLTYPE CtrlCompleted_Invoke(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler*, HRESULT, ICoreWebView2Controller*);
+static HRESULT STDMETHODCALLTYPE MsgReceived_Invoke(ICoreWebView2WebMessageReceivedEventHandler*, ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs*);
+
+static HRESULT STDMETHODCALLTYPE EnvCompleted_QueryInterface(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *This, REFIID riid, void **ppv) {
+    (void)riid;
+    *ppv = This;
+    This->lpVtbl->AddRef(This);
+    return S_OK;
+}
+static ULONG STDMETHODCALLTYPE EnvCompleted_AddRef(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *This) {
+    return ++This->refCount;
+}
+static ULONG STDMETHODCALLTYPE EnvCompleted_Release(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *This) {
+    ULONG rc = --This->refCount;
+    if (rc == 0) free(This);
+    return rc;
+}
+
+static HRESULT STDMETHODCALLTYPE EnvCompleted_Invoke(ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *This, HRESULT result, ICoreWebView2Environment *env) {
+    (void)This;
+    if (FAILED(result) || !env) return result;
+    g_webviewEnv = env;
+    env->lpVtbl->AddRef(env);
+
+    static ControllerCompletedHandlerVtbl ctrlVtbl = {0};
+    static BOOL ctrlVtblInit = FALSE;
+    if (!ctrlVtblInit) {
+        ctrlVtbl.QueryInterface = (HRESULT (STDMETHODCALLTYPE *)(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler*, REFIID, void**))EnvCompleted_QueryInterface;
+        ctrlVtbl.AddRef = (ULONG (STDMETHODCALLTYPE *)(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler*))EnvCompleted_AddRef;
+        ctrlVtbl.Release = (ULONG (STDMETHODCALLTYPE *)(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler*))EnvCompleted_Release;
+        ctrlVtbl.Invoke = CtrlCompleted_Invoke;
+        ctrlVtblInit = TRUE;
+    }
+
+    ICoreWebView2CreateCoreWebView2ControllerCompletedHandler *handler = malloc(sizeof(*handler));
+    handler->lpVtbl = &ctrlVtbl;
+    handler->refCount = 1;
+
+    env->lpVtbl->CreateCoreWebView2Controller(env, g_webviewHwnd, handler);
+    handler->lpVtbl->Release(handler);
+    return S_OK;
+}
+
+static EnvironmentCompletedHandlerVtbl g_envCompletedVtbl = {
+    EnvCompleted_QueryInterface,
+    EnvCompleted_AddRef,
+    EnvCompleted_Release,
+    EnvCompleted_Invoke
+};
+
+static HRESULT STDMETHODCALLTYPE CtrlCompleted_Invoke(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler *This, HRESULT result, ICoreWebView2Controller *controller) {
+    (void)This;
+    if (FAILED(result) || !controller) return result;
+
+    g_webviewController = controller;
+    controller->lpVtbl->AddRef(controller);
+
+    RECT bounds;
+    GetClientRect(g_webviewHwnd, &bounds);
+    controller->lpVtbl->put_Bounds(controller, bounds);
+    controller->lpVtbl->put_IsVisible(controller, TRUE);
+
+    ICoreWebView2 *webview = NULL;
+    controller->lpVtbl->get_CoreWebView2(controller, &webview);
+    if (!webview) return E_FAIL;
+    g_webviewView = webview;
+
+    ICoreWebView2Settings *settings = NULL;
+    webview->lpVtbl->get_Settings(webview, &settings);
+    if (settings) {
+        settings->lpVtbl->put_AreDefaultContextMenusEnabled(settings, FALSE);
+        settings->lpVtbl->put_AreDevToolsEnabled(settings, FALSE);
+        settings->lpVtbl->put_IsStatusBarEnabled(settings, FALSE);
+        settings->lpVtbl->put_IsZoomControlEnabled(settings, FALSE);
+        settings->lpVtbl->Release(settings);
+    }
+
+    static WebMessageReceivedHandlerVtbl msgVtbl = {0};
+    static BOOL msgVtblInit = FALSE;
+    if (!msgVtblInit) {
+        msgVtbl.QueryInterface = (HRESULT (STDMETHODCALLTYPE *)(ICoreWebView2WebMessageReceivedEventHandler*, REFIID, void**))EnvCompleted_QueryInterface;
+        msgVtbl.AddRef = (ULONG (STDMETHODCALLTYPE *)(ICoreWebView2WebMessageReceivedEventHandler*))EnvCompleted_AddRef;
+        msgVtbl.Release = (ULONG (STDMETHODCALLTYPE *)(ICoreWebView2WebMessageReceivedEventHandler*))EnvCompleted_Release;
+        msgVtbl.Invoke = MsgReceived_Invoke;
+        msgVtblInit = TRUE;
+    }
+
+    ICoreWebView2WebMessageReceivedEventHandler *msgHandler = malloc(sizeof(*msgHandler));
+    msgHandler->lpVtbl = &msgVtbl;
+    msgHandler->refCount = 1;
+
+    EventRegistrationToken token;
+    webview->lpVtbl->add_WebMessageReceived(webview, msgHandler, &token);
+    msgHandler->lpVtbl->Release(msgHandler);
+
+    // Load embedded HTML from resources
+    HRSRC hRes = FindResource(NULL, MAKEINTRESOURCE(IDR_HTML_UI), RT_RCDATA);
+    if (hRes) {
+        HGLOBAL hData = LoadResource(NULL, hRes);
+        if (hData) {
+            DWORD htmlSize = SizeofResource(NULL, hRes);
+            const char *htmlUtf8 = (const char *)LockResource(hData);
+            if (htmlUtf8 && htmlSize > 0) {
+                int wLen = MultiByteToWideChar(CP_UTF8, 0, htmlUtf8, (int)htmlSize, NULL, 0);
+                wchar_t *wHtml = malloc((wLen + 1) * sizeof(wchar_t));
+                MultiByteToWideChar(CP_UTF8, 0, htmlUtf8, (int)htmlSize, wHtml, wLen);
+                wHtml[wLen] = L'\0';
+                webview->lpVtbl->NavigateToString(webview, wHtml);
+                free(wHtml);
+            }
+        }
+    }
+
+    return S_OK;
+}
+
+// --- WebMessageReceivedHandler ---
+
+static HRESULT STDMETHODCALLTYPE MsgReceived_Invoke(ICoreWebView2WebMessageReceivedEventHandler *This, ICoreWebView2 *sender, ICoreWebView2WebMessageReceivedEventArgs *args) {
+    (void)This; (void)sender;
+
+    LPWSTR wMsg = NULL;
+    args->lpVtbl->TryGetWebMessageAsString(args, &wMsg);
+    if (!wMsg) return S_OK;
+
+    int len = WideCharToMultiByte(CP_UTF8, 0, wMsg, -1, NULL, 0, NULL, NULL);
+    char *msg = malloc(len);
+    WideCharToMultiByte(CP_UTF8, 0, wMsg, -1, msg, len, NULL, NULL);
+    CoTaskMemFree(wMsg);
+
+    char action[64] = {0};
+    json_get_string(msg, "action", action, sizeof(action));
+
+    if (strcmp(action, "getInit") == 0) {
+        webview_push_init_config();
+    } else if (strcmp(action, "saveSettings") == 0) {
+        char chromePath[MAX_PATH] = {0};
+        char connectAddress[64] = {0};
+        int debugPort = 9222;
+        int statusCheckInterval = 60;
+
+        json_get_string(msg, "chromePath", chromePath, sizeof(chromePath));
+        json_get_string(msg, "connectAddress", connectAddress, sizeof(connectAddress));
+        json_get_int(msg, "debugPort", &debugPort);
+        json_get_int(msg, "statusCheckInterval", &statusCheckInterval);
+
+        // Write to global config
+        MultiByteToWideChar(CP_UTF8, 0, chromePath, -1, g_config.chromePath, MAX_PATH);
+        MultiByteToWideChar(CP_UTF8, 0, connectAddress, -1, g_config.connectAddress, 64);
+        g_config.debugPort = debugPort;
+        g_config.statusCheckInterval = statusCheckInterval;
+        g_configChanged = TRUE;
+
+        PostMessage(g_webviewHwnd, WM_CLOSE, 0, 0);
+    } else if (strcmp(action, "browse") == 0) {
+        OPENFILENAMEW ofn = {0};
+        wchar_t szFile[MAX_PATH] = {0};
+
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = g_webviewHwnd;
+        ofn.lpstrFile = szFile;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.lpstrFilter = L"Executable Files (*.exe)\0*.exe\0All Files (*.*)\0*.*\0";
+        ofn.nFilterIndex = 1;
+        ofn.lpstrTitle = L"Select Chrome Executable";
+        ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+
+        if (GetOpenFileNameW(&ofn)) {
+            webview_push_browse_result(szFile);
+        }
+    } else if (strcmp(action, "close") == 0) {
+        PostMessage(g_webviewHwnd, WM_CLOSE, 0, 0);
+    } else if (strcmp(action, "resize") == 0) {
+        int contentHeight = 0;
+        json_get_int(msg, "height", &contentHeight);
+        if (contentHeight > 0 && g_webviewHwnd) {
+            RECT clientRect = {0}, windowRect = {0};
+            GetClientRect(g_webviewHwnd, &clientRect);
+            GetWindowRect(g_webviewHwnd, &windowRect);
+            int chromeH = (windowRect.bottom - windowRect.top) - (clientRect.bottom - clientRect.top);
+            int newWindowH = contentHeight + chromeH;
+            int windowW = windowRect.right - windowRect.left;
+            UINT flags = SWP_NOMOVE | SWP_NOZORDER;
+            if (g_webviewWindowShown) {
+                flags |= SWP_NOACTIVATE;
+            } else {
+                flags |= SWP_SHOWWINDOW;
+                KillTimer(g_webviewHwnd, ID_TIMER_WEBVIEW_SHOW_FALLBACK);
+            }
+            SetWindowPos(g_webviewHwnd, NULL, 0, 0, windowW, newWindowH, flags);
+            g_webviewWindowShown = TRUE;
+            webview_sync_controller_bounds();
+        }
+    }
+
+    free(msg);
+    return S_OK;
+}
+
+// ============================================================================
+// WebView2 window
+// ============================================================================
+
+static LRESULT CALLBACK WebViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_SIZE:
+            webview_sync_controller_bounds();
+            return 0;
+
+        case WM_TIMER:
+            if (wParam == ID_TIMER_WEBVIEW_SHOW_FALLBACK) {
+                KillTimer(hwnd, ID_TIMER_WEBVIEW_SHOW_FALLBACK);
+                if (!g_webviewWindowShown) {
+                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                    UpdateWindow(hwnd);
+                    g_webviewWindowShown = TRUE;
+                    webview_sync_controller_bounds();
                 }
-
-                case IDOK: {
-                    if (!pTempConfig) {
-                        EndDialog(hDlg, IDCANCEL);
-                        return TRUE;
-                    }
-
-                    // Get values from edit controls
-                    GetDlgItemTextW(hDlg, IDC_EDIT_CHROME_PATH, pTempConfig->chromePath, MAX_PATH);
-                    pTempConfig->debugPort = GetDlgItemInt(hDlg, IDC_EDIT_DEBUG_PORT, NULL, FALSE);
-                    GetDlgItemTextW(hDlg, IDC_EDIT_CONNECT_ADDR, pTempConfig->connectAddress, 64);
-                    pTempConfig->statusCheckInterval = GetDlgItemInt(hDlg, IDC_EDIT_STATUS_INTERVAL, NULL, FALSE);
-
-                    // Validate port
-                    if (pTempConfig->debugPort < 1 || pTempConfig->debugPort > 65535) {
-                        MessageBoxW(hDlg, L"Debug port must be between 1 and 65535.",
-                                   L"Validation Error", MB_OK | MB_ICONWARNING);
-                        SetFocus(GetDlgItem(hDlg, IDC_EDIT_DEBUG_PORT));
-                        return TRUE;
-                    }
-
-                    // Validate interval
-                    if (pTempConfig->statusCheckInterval < 5) {
-                        MessageBoxW(hDlg, L"Status check interval must be at least 5 seconds.",
-                                   L"Validation Error", MB_OK | MB_ICONWARNING);
-                        SetFocus(GetDlgItem(hDlg, IDC_EDIT_STATUS_INTERVAL));
-                        return TRUE;
-                    }
-
-                    // Connect address default
-                    if (pTempConfig->connectAddress[0] == L'\0') {
-                        wcscpy_s(pTempConfig->connectAddress, 64, L"127.0.0.1");
-                    }
-
-                    EndDialog(hDlg, IDOK);
-                    return TRUE;
-                }
-
-                case IDCANCEL:
-                    EndDialog(hDlg, IDCANCEL);
-                    return TRUE;
+                return 0;
             }
             break;
 
         case WM_CLOSE:
-            EndDialog(hDlg, IDCANCEL);
-            return TRUE;
+            g_webviewWindowShown = FALSE;
+            KillTimer(hwnd, ID_TIMER_WEBVIEW_SHOW_FALLBACK);
+            if (g_webviewController) {
+                g_webviewController->lpVtbl->Close(g_webviewController);
+                g_webviewController->lpVtbl->Release(g_webviewController);
+                g_webviewController = NULL;
+            }
+            if (g_webviewView) {
+                g_webviewView->lpVtbl->Release(g_webviewView);
+                g_webviewView = NULL;
+            }
+            if (g_webviewEnv) {
+                g_webviewEnv->lpVtbl->Release(g_webviewEnv);
+                g_webviewEnv = NULL;
+            }
+            DestroyWindow(hwnd);
+            return 0;
+
+        case WM_DESTROY:
+            g_webviewHwnd = NULL;
+            g_webviewWindowShown = FALSE;
+            KillTimer(hwnd, ID_TIMER_WEBVIEW_SHOW_FALLBACK);
+            return 0;
     }
-    return FALSE;
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-// Helper to add a control to dialog template (from SystrayLauncher)
-static BYTE* AddDialogControl2(BYTE* ptr, WORD ctrlId, WORD classAtom, DWORD style,
-                               short posX, short posY, short width, short height,
-                               const wchar_t* text) {
-    // Align to DWORD
-    ptr = (BYTE*)(((ULONG_PTR)ptr + 3) & ~3);
+static void ShowWebViewDialog(int width, int height) {
+    // If already open, bring to front
+    if (g_webviewHwnd != NULL) {
+        SetForegroundWindow(g_webviewHwnd);
+        return;
+    }
 
-    DLGITEMTEMPLATE* item = (DLGITEMTEMPLATE*)ptr;
-    item->style = style;
-    item->dwExtendedStyle = 0;
-    item->x = posX;
-    item->y = posY;
-    item->cx = width;
-    item->cy = height;
-    item->id = ctrlId;
-    ptr += sizeof(DLGITEMTEMPLATE);
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
-    // Class (atom)
-    *(WORD*)ptr = 0xFFFF;
-    ptr += sizeof(WORD);
-    *(WORD*)ptr = classAtom;
-    ptr += sizeof(WORD);
+    if (!fnCreateEnvironment && !load_webview2_loader()) {
+        return;
+    }
 
-    // Text
-    size_t textLen = wcslen(text) + 1;
-    memcpy(ptr, text, textLen * sizeof(wchar_t));
-    ptr += textLen * sizeof(wchar_t);
+    // Register window class (once)
+    static BOOL classRegistered = FALSE;
+    if (!classRegistered) {
+        WNDCLASSEXW wc = {0};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = WebViewWndProc;
+        wc.hInstance = g_hInstance;
+        wc.hIcon = LoadIconW(g_hInstance, MAKEINTRESOURCEW(IDI_TRAYICON));
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        wc.lpszClassName = L"ChromeDevLauncherWebViewWnd";
+        wc.hIconSm = LoadIconW(g_hInstance, MAKEINTRESOURCEW(IDI_TRAYICON));
+        RegisterClassExW(&wc);
+        classRegistered = TRUE;
+    }
 
-    // Creation data (none)
-    *(WORD*)ptr = 0;
-    ptr += sizeof(WORD);
+    // Center on screen
+    int screenW = GetSystemMetrics(SM_CXSCREEN);
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    int posX = (screenW - width) / 2;
+    int posY = (screenH - height) / 2;
 
-    return ptr;
+    g_webviewHwnd = CreateWindowExW(0, L"ChromeDevLauncherWebViewWnd", L"Configuration",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        posX, posY, width, height,
+        NULL, NULL, g_hInstance, NULL);
+
+    if (!g_webviewHwnd) {
+        return;
+    }
+    g_webviewWindowShown = FALSE;
+    SetTimer(g_webviewHwnd, ID_TIMER_WEBVIEW_SHOW_FALLBACK, WEBVIEW_SHOW_FALLBACK_DELAY_MS, NULL);
+
+    // Build user data folder path
+    WCHAR userDataFolder[MAX_PATH];
+    DWORD tempLen = GetTempPathW(MAX_PATH, userDataFolder);
+    if (tempLen > 0 && tempLen < MAX_PATH - 30) {
+        wcscat(userDataFolder, L"ChromeDevLauncher.WebView2");
+    } else {
+        wcscpy(userDataFolder, L"");
+    }
+
+    // Create environment
+    ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *envHandler = malloc(sizeof(*envHandler));
+    envHandler->lpVtbl = &g_envCompletedVtbl;
+    envHandler->refCount = 1;
+
+    HRESULT hr = fnCreateEnvironment(NULL, userDataFolder[0] ? userDataFolder : NULL, NULL, envHandler);
+    envHandler->lpVtbl->Release(envHandler);
+
+    if (FAILED(hr)) {
+        MessageBoxW(NULL,
+            L"Failed to initialize WebView2.\n\n"
+            L"Please ensure the Microsoft Edge WebView2 Runtime is installed.\n"
+            L"Download from: https://developer.microsoft.com/en-us/microsoft-edge/webview2/",
+            L"Chrome Developer Launcher", MB_ICONERROR | MB_OK);
+        DestroyWindow(g_webviewHwnd);
+        g_webviewHwnd = NULL;
+    }
 }
+
+// ============================================================================
+// Configuration Dialog
+// ============================================================================
 
 static BOOL ShowConfigDialog(HWND hwndParent) {
-    // Create a copy of current config to edit
-    Configuration tempConfig;
-    memcpy(&tempConfig, &g_config, sizeof(Configuration));
+    (void)hwndParent;
 
-    // Dialog dimensions (in dialog units) - matching SystrayLauncher
-    const short DLG_WIDTH = 320;
-    const short MARGIN_X = 8;
-    const short MARGIN_Y = 8;
-    const short LABEL_H = 10;
-    const short LABEL_GAP = 2;
-    const short EDIT_H = 14;
-    const short SPACING = 6;
-    const short BTN_W = 50;
-    const short BTN_H = 14;
-    const short BROWSE_W = 20;
+    // Save copy of current config for comparison after dialog closes
+    Configuration savedConfig;
+    memcpy(&savedConfig, &g_config, sizeof(Configuration));
+    g_configChanged = FALSE;
 
-    // Calculate dialog height: 4 fields + buttons
-    const short DLG_HEIGHT = MARGIN_Y
-        + (LABEL_H + LABEL_GAP + EDIT_H + SPACING) * 4
-        + BTN_H + MARGIN_Y;
+    // Show WebView2 dialog
+    ShowWebViewDialog(480, 340);
 
-    short editW = DLG_WIDTH - (2 * MARGIN_X);
-    short pathEditW = editW - BROWSE_W - 4;
-    short yPos = MARGIN_Y;
+    // Run local message loop until WebView2 window is destroyed (makes call blocking)
+    MSG msg;
+    while (g_webviewHwnd && GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
 
-    // Allocate buffer for dialog template
-    size_t templateSize = 4096;
-    BYTE* templateBuffer = (BYTE*)calloc(1, templateSize);
-    if (!templateBuffer) return FALSE;
-
-    BYTE* ptr = templateBuffer;
-
-    // DLGTEMPLATE - must be DWORD aligned (buffer starts aligned from calloc)
-    DLGTEMPLATE* dlgTemplate = (DLGTEMPLATE*)ptr;
-    dlgTemplate->style = DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_SETFONT;
-    dlgTemplate->dwExtendedStyle = 0;
-    dlgTemplate->cdit = 11;  // 4 labels + 4 edits + browse + OK + Cancel
-    dlgTemplate->x = 0;
-    dlgTemplate->y = 0;
-    dlgTemplate->cx = DLG_WIDTH;
-    dlgTemplate->cy = DLG_HEIGHT;
-    ptr += sizeof(DLGTEMPLATE);
-
-    // Menu (none) - WORD array
-    *(WORD*)ptr = 0;
-    ptr += sizeof(WORD);
-
-    // Class (default) - WORD array
-    *(WORD*)ptr = 0;
-    ptr += sizeof(WORD);
-
-    // Title - null-terminated Unicode string
-    const wchar_t* title = L"Configuration";
-    size_t titleLen = wcslen(title) + 1;
-    memcpy(ptr, title, titleLen * sizeof(wchar_t));
-    ptr += titleLen * sizeof(wchar_t);
-
-    // Font (required for DS_SETFONT)
-    *(WORD*)ptr = 8;  // Point size
-    ptr += sizeof(WORD);
-
-    // Font name - null-terminated Unicode string
-    const wchar_t* fontName = L"Segoe UI";
-    size_t fontLen = wcslen(fontName) + 1;
-    memcpy(ptr, fontName, fontLen * sizeof(wchar_t));
-    ptr += fontLen * sizeof(wchar_t);
-
-    // Now add controls - each must be DWORD aligned
-
-    // Chrome Path label
-    ptr = AddDialogControl2(ptr, IDC_STATIC_CHROME_PATH, 0x0082,
-                            WS_CHILD | WS_VISIBLE | SS_LEFT,
-                            MARGIN_X, yPos, editW, LABEL_H,
-                            L"Chrome Executable Path:");
-    yPos += LABEL_H + LABEL_GAP;
-
-    // Chrome Path edit
-    ptr = AddDialogControl2(ptr, IDC_EDIT_CHROME_PATH, 0x0081,
-                            WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
-                            MARGIN_X, yPos, pathEditW, EDIT_H, L"");
-
-    // Browse button
-    ptr = AddDialogControl2(ptr, IDC_BTN_BROWSE, 0x0080,
-                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                            MARGIN_X + pathEditW + 2, yPos, BROWSE_W, EDIT_H, L"...");
-    yPos += EDIT_H + SPACING;
-
-    // Debug Port label
-    ptr = AddDialogControl2(ptr, IDC_STATIC_DEBUG_PORT, 0x0082,
-                            WS_CHILD | WS_VISIBLE | SS_LEFT,
-                            MARGIN_X, yPos, editW, LABEL_H,
-                            L"Debug Port:");
-    yPos += LABEL_H + LABEL_GAP;
-
-    // Debug Port edit
-    ptr = AddDialogControl2(ptr, IDC_EDIT_DEBUG_PORT, 0x0081,
-                            WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_NUMBER,
-                            MARGIN_X, yPos, editW, EDIT_H, L"");
-    yPos += EDIT_H + SPACING;
-
-    // Chrome IP Address label
-    ptr = AddDialogControl2(ptr, IDC_STATIC_CONNECT_ADDR, 0x0082,
-                            WS_CHILD | WS_VISIBLE | SS_LEFT,
-                            MARGIN_X, yPos, editW, LABEL_H,
-                            L"Chrome IP Address:");
-    yPos += LABEL_H + LABEL_GAP;
-
-    // Connect Address edit
-    ptr = AddDialogControl2(ptr, IDC_EDIT_CONNECT_ADDR, 0x0081,
-                            WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
-                            MARGIN_X, yPos, editW, EDIT_H, L"");
-    yPos += EDIT_H + SPACING;
-
-    // Status Interval label
-    ptr = AddDialogControl2(ptr, IDC_STATIC_STATUS_INTERVAL, 0x0082,
-                            WS_CHILD | WS_VISIBLE | SS_LEFT,
-                            MARGIN_X, yPos, editW, LABEL_H,
-                            L"Status Check Interval (seconds):");
-    yPos += LABEL_H + LABEL_GAP;
-
-    // Status Interval edit
-    ptr = AddDialogControl2(ptr, IDC_EDIT_STATUS_INTERVAL, 0x0081,
-                            WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_NUMBER,
-                            MARGIN_X, yPos, editW, EDIT_H, L"");
-    yPos += EDIT_H + SPACING;
-
-    // Buttons
-    short btnY = yPos;
-    short okX = DLG_WIDTH - MARGIN_X - BTN_W - 4 - BTN_W;
-    ptr = AddDialogControl2(ptr, IDOK, 0x0080,
-                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-                            okX, btnY, BTN_W, BTN_H, L"OK");
-
-    short cancelX = DLG_WIDTH - MARGIN_X - BTN_W;
-    ptr = AddDialogControl2(ptr, IDCANCEL, 0x0080,
-                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                            cancelX, btnY, BTN_W, BTN_H, L"Cancel");
-
-    INT_PTR result = DialogBoxIndirectParamW(g_hInstance, (DLGTEMPLATE*)templateBuffer,
-                                              hwndParent, ConfigDialogProc, (LPARAM)&tempConfig);
-
-    free(templateBuffer);
-
-    if (result == IDOK) {
+    if (g_configChanged) {
         // Check if Chrome-impacting settings changed
         BOOL needsRestart = FALSE;
-        if (wcscmp(g_config.chromePath, tempConfig.chromePath) != 0 ||
-            g_config.debugPort != tempConfig.debugPort ||
-            wcscmp(g_config.connectAddress, tempConfig.connectAddress) != 0) {
+        if (wcscmp(savedConfig.chromePath, g_config.chromePath) != 0 ||
+            savedConfig.debugPort != g_config.debugPort ||
+            wcscmp(savedConfig.connectAddress, g_config.connectAddress) != 0) {
             needsRestart = TRUE;
         }
-
-        // Copy temp config to global config
-        memcpy(&g_config, &tempConfig, sizeof(Configuration));
 
         // Save to registry
         SaveConfigToRegistry(&g_config);
@@ -1348,6 +1805,9 @@ static void RegisterCleanupHandlers(void) {
 }
 
 static void PerformCleanup(void) {
+    // Close WebView2 dialog if open
+    if (g_webviewHwnd) SendMessage(g_webviewHwnd, WM_CLOSE, 0, 0);
+
     // Remove tray icon
     RemoveTrayIcon();
 

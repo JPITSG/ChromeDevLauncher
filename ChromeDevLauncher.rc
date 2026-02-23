@@ -1,4 +1,8 @@
 // Chrome Developer Launcher - Windows Resource File
 
 // Icon resource (ID 101 = IDI_TRAYICON)
-101 ICON "ChromeDevLauncher.ico"
+101 ICON "assets/icon.ico"
+
+// WebView2 UI resources
+200 RCDATA "assets/dist/index.html"
+201 RCDATA "assets/WebView2Loader.dll"
