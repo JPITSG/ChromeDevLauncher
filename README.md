@@ -62,4 +62,4 @@ Output: `release/ChromeDevLauncher.exe`
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) file for details.
+[MIT](LICENSE)
