@@ -112,11 +112,11 @@ export default function ConfigView({ config }: Props) {
         )}
       </div>
 
-      <div className="flex justify-end gap-2 pt-2">
-        <Button variant="outline" className="w-20" onClick={() => closeDialog()}>
+      <div className="flex justify-end gap-2 pt-1">
+        <Button variant="outline" size="sm" className="min-w-[5rem]" onClick={() => closeDialog()}>
           Cancel
         </Button>
-        <Button className="w-20" onClick={handleSave}>Save</Button>
+        <Button size="sm" className="min-w-[5rem]" onClick={handleSave}>Save</Button>
       </div>
     </div>
   );
