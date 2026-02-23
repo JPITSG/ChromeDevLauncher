@@ -61,7 +61,7 @@ export default function ConfigView({ config }: Props) {
   };
 
   return (
-    <div className="p-4 space-y-3">
+    <div className="p-5 flex flex-col gap-3 max-w-md mx-auto text-xs">
       <div className="space-y-1">
         <Label>Chrome Executable Path</Label>
         <div className="flex gap-1">
