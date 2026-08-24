@@ -41,8 +41,8 @@ Settings are stored in the Windows Registry at:
 HKEY_CURRENT_USER\SOFTWARE\JPIT\ChromeDevLauncher
 ```
 
-The configuration footer displays the application and WebView2 runtime
-versions as `v<application version> / <WebView2 version>`.
+The configuration footer displays the application version as
+`v<application version>`.
 
 ## Updates
 

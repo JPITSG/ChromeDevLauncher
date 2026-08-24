@@ -23,13 +23,11 @@ import { Label } from "./components/ui/label";
 
 interface Props {
   config: ConfigData;
-  webView2Version: string;
   updateCompletedVersion: string;
 }
 
 export default function ConfigView({
   config,
-  webView2Version,
   updateCompletedVersion,
 }: Props) {
   const [chromePath, setChromePath] = useState(config.chromePath);
@@ -248,9 +246,9 @@ export default function ConfigView({
       <div className="flex items-center justify-between gap-3 pt-1">
         <span
           className="select-none whitespace-nowrap text-[11px] leading-none tabular-nums text-neutral-400"
-          title="Application version / WebView2 version"
+          title="Application version"
         >
-          v{__APP_VERSION__} / {webView2Version}
+          v{__APP_VERSION__}
         </span>
         <div className="flex items-center gap-2">
           <Button

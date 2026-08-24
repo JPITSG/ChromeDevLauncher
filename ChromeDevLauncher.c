@@ -420,16 +420,12 @@ static ICoreWebView2 *g_webviewView = NULL;
 static BOOL g_webviewWindowShown = FALSE;
 static BOOL g_configChanged = FALSE;
 static BOOL g_configViewReady = FALSE;
-static wchar_t g_webView2Version[128] = L"Unknown";
 
 typedef HRESULT (STDAPICALLTYPE *PFN_CreateCoreWebView2EnvironmentWithOptions)(
     LPCWSTR browserExecutableFolder, LPCWSTR userDataFolder, void* options,
     ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler* handler);
 
 static PFN_CreateCoreWebView2EnvironmentWithOptions fnCreateEnvironment = NULL;
-typedef HRESULT (STDAPICALLTYPE *PFN_GetAvailableCoreWebView2BrowserVersionString)(
-    LPCWSTR browserExecutableFolder, LPWSTR* versionInfo);
-static PFN_GetAvailableCoreWebView2BrowserVersionString fnGetAvailableBrowserVersion = NULL;
 static WCHAR g_extractedDllPath[MAX_PATH] = {0};
 
 // ============================================================================
@@ -746,23 +742,10 @@ static BOOL load_webview2_loader(void) {
     }
     fnCreateEnvironment = (PFN_CreateCoreWebView2EnvironmentWithOptions)
         GetProcAddress(hMod, "CreateCoreWebView2EnvironmentWithOptions");
-    fnGetAvailableBrowserVersion =
-        (PFN_GetAvailableCoreWebView2BrowserVersionString)GetProcAddress(
-            hMod, "GetAvailableCoreWebView2BrowserVersionString");
     if (!fnCreateEnvironment) {
         MessageBoxW(NULL, L"WebView2Loader.dll loaded but CreateCoreWebView2EnvironmentWithOptions not found.\n\n"
             L"The DLL may be corrupted or the wrong version.", L"Chrome Developer Launcher", MB_ICONERROR);
         return FALSE;
-    }
-
-    if (fnGetAvailableBrowserVersion) {
-        LPWSTR versionString = NULL;
-        if (SUCCEEDED(fnGetAvailableBrowserVersion(NULL, &versionString)) &&
-            versionString && versionString[0] != L'\0') {
-            wcscpy_s(g_webView2Version,
-                     sizeof(g_webView2Version) / sizeof(wchar_t), versionString);
-        }
-        CoTaskMemFree(versionString);
     }
     return TRUE;
 }
@@ -1774,9 +1757,7 @@ static void webview_push_init_config(void) {
     json_escape_wstring(g_config.chromePath, wPath, MAX_PATH * 2);
     wchar_t wAddr[128];
     json_escape_wstring(g_config.connectAddress, wAddr, 128);
-    wchar_t wWebView2Version[256];
     wchar_t wUpdateCompletedVersion[64];
-    json_escape_wstring(g_webView2Version, wWebView2Version, 256);
     json_escape_wstring(
         g_updateConfirmationPending ? APP_VERSION_WSTRING : L"",
         wUpdateCompletedVersion, 64);
@@ -1786,7 +1767,7 @@ static void webview_push_init_config(void) {
         L"\"chromePath\":\"%s\",\"debugPort\":%d,"
         L"\"connectAddress\":\"%s\",\"statusCheckInterval\":%d,"
         L"\"autoCheckForUpdates\":%s,\"updateCheckPending\":%s,"
-        L"\"updatePromptPending\":%s},\"webView2Version\":\"%s\","
+        L"\"updatePromptPending\":%s},"
         L"\"updateCompletedVersion\":\"%s\"})",
         wPath, g_config.debugPort, wAddr, g_config.statusCheckInterval,
         g_config.autoCheckForUpdates ? L"true" : L"false",
@@ -1796,7 +1777,7 @@ static void webview_push_init_config(void) {
              (PVOID volatile*)&g_updatePostedResult, NULL, NULL) != NULL)
             ? L"true" : L"false",
         g_updateNoticeTask ? L"true" : L"false",
-        wWebView2Version, wUpdateCompletedVersion);
+        wUpdateCompletedVersion);
     webview_execute_script(script);
 }
 
@@ -2473,7 +2454,10 @@ static HRESULT STDMETHODCALLTYPE MsgReceived_Invoke(ICoreWebView2WebMessageRecei
     } else if (strcmp(action, "resize") == 0) {
         int contentHeight = 0;
         json_get_int(msg, "height", &contentHeight);
-        if (contentHeight > 0 && g_webviewHwnd) {
+        // Content-driven sizing must not fight a maximized (or minimized)
+        // window; WM_SIZE keeps the WebView bounds in sync there.
+        if (contentHeight > 0 && g_webviewHwnd &&
+            !IsZoomed(g_webviewHwnd) && !IsIconic(g_webviewHwnd)) {
             RECT clientRect = {0}, windowRect = {0};
             GetClientRect(g_webviewHwnd, &clientRect);
             GetWindowRect(g_webviewHwnd, &windowRect);
@@ -2594,8 +2578,10 @@ static void ShowWebViewDialog(int width, int height) {
     int posX = (screenW - width) / 2;
     int posY = (screenH - height) / 2;
 
+    // Use the standard overlapped frame so Windows renders the normal caption
+    // height instead of the more compact fixed-dialog title bar.
     g_webviewHwnd = CreateWindowExW(0, L"ChromeDevLauncherWebViewWnd", L"Configuration",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        WS_OVERLAPPEDWINDOW,
         posX, posY, width, height,
         NULL, NULL, g_hInstance, NULL);
 

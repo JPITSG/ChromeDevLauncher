@@ -11,7 +11,6 @@ export interface ConfigData {
 export interface InitData {
   view: "config";
   config: ConfigData;
-  webView2Version: string;
   updateCompletedVersion: string;
 }
 
