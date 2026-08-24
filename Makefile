@@ -4,13 +4,18 @@
 CC = x86_64-w64-mingw32-gcc
 WINDRES = x86_64-w64-mingw32-windres
 CFLAGS = -Wall -O2 -mwindows -DUNICODE -D_UNICODE
-LDFLAGS = -liphlpapi -lole32 -lshell32 -lwininet -ladvapi32 -lcomdlg32 -lws2_32 -lgdi32
+LDFLAGS = -liphlpapi -lole32 -lshell32 -lshlwapi -lwinhttp -lversion -lbcrypt -luserenv -ladvapi32 -lcomdlg32 -lws2_32 -lgdi32
 
 RELEASE_DIR = release
 TARGET = $(RELEASE_DIR)/ChromeDevLauncher.exe
 SRC = ChromeDevLauncher.c
 RC = ChromeDevLauncher.rc
 RES_OBJ = ChromeDevLauncher_res.o
+
+FRONTEND_SOURCES = $(shell find assets/src -type f) \
+	assets/index.html assets/package.json assets/package-lock.json \
+	assets/vite.config.ts assets/tsconfig.json assets/postcss.config.js \
+	assets/tailwind.config.ts
 
 .PHONY: all clean
 
@@ -20,16 +25,16 @@ $(RELEASE_DIR):
 	mkdir -p $(RELEASE_DIR)
 
 # Build frontend assets
-assets/dist/index.html:
+assets/dist/index.html: $(FRONTEND_SOURCES)
 	cd assets && npm install && npm run build
 
 # Compile resource file
-$(RES_OBJ): $(RC) assets/icon.ico assets/dist/index.html assets/WebView2Loader.dll
+$(RES_OBJ): $(RC) version.h assets/icon.ico assets/dist/index.html assets/WebView2Loader.dll
 	$(WINDRES) $< -o $@
 
 # Link final executable
-$(TARGET): $(SRC) $(RES_OBJ) | $(RELEASE_DIR)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+$(TARGET): $(SRC) version.h $(RES_OBJ) | $(RELEASE_DIR)
+	$(CC) $(CFLAGS) -o $@ $(SRC) $(RES_OBJ) $(LDFLAGS)
 	@echo "Build complete: $(TARGET)"
 
 clean:

@@ -9,6 +9,7 @@ A Windows 10+ system tray utility that launches Chrome with remote debugging ena
 - **System Tray** - Runs quietly in the system tray with status monitoring
 - **Status Display** - Shows Chrome version, API status, and active port forwards
 - **Configuration** - Registry-backed settings with modern WebView2 configuration dialog
+- **Self Update** - Compares embedded local and repository versions, installs newer builds, or force-reinstalls the same version
 - **Auto-Elevation** - Automatically requests administrator privileges (required for port forwarding)
 - **Single Instance** - Prevents multiple instances from running simultaneously
 - **Clean Shutdown** - Removes port forwards and terminates Chrome processes on exit
@@ -33,11 +34,35 @@ A Windows 10+ system tray utility that launches Chrome with remote debugging ena
 - **Debug Port** - Remote debugging port (default: 9222)
 - **Chrome IP Address** - Address Chrome binds to (default: 127.0.0.1)
 - **Status Check Interval** - How often to poll Chrome DevTools API (default: 60 seconds)
+- **Automatically Check for Updates** - Checks at startup, whenever Configure opens, and every 60 minutes (enabled by default)
 
 Settings are stored in the Windows Registry at:
 ```
 HKEY_CURRENT_USER\SOFTWARE\JPIT\ChromeDevLauncher
 ```
+
+The configuration footer displays the application and WebView2 runtime
+versions as `v<application version> / <WebView2 version>`.
+
+## Updates
+
+Automatic checks are silent unless a newer version is available. A newer
+build opens Configuration and displays the update prompt. **Ignore this
+version** suppresses that version during later automatic checks, including
+after restart; the manual **Update** button still displays every result.
+
+Checks download the repository's
+[`release/ChromeDevLauncher.exe`](release/ChromeDevLauncher.exe) to the user's
+temporary directory and compare its embedded Windows file version with the
+running executable. The Update button shows download speed while checking and
+acts as a cancellable stop button. A matching remote version offers **Force
+update**; an older repository build is never installed.
+
+Accepted updates use an elevated helper to replace the running executable,
+roll back if the updated application cannot start, clean up temporary files,
+and reopen Configuration with the installed version confirmation. Cancelling
+the download, result prompt, or UAC approval leaves the current version
+running.
 
 ## System Tray Menu
 

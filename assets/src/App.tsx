@@ -32,7 +32,11 @@ export default function App() {
 
   return (
     <div ref={containerRef}>
-      <ConfigView config={initData.config} />
+      <ConfigView
+        config={initData.config}
+        webView2Version={initData.webView2Version ?? "Unknown"}
+        updateCompletedVersion={initData.updateCompletedVersion ?? ""}
+      />
     </div>
   );
 }
