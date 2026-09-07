@@ -2464,14 +2464,18 @@ static HRESULT STDMETHODCALLTYPE MsgReceived_Invoke(ICoreWebView2WebMessageRecei
             int chromeH = (windowRect.bottom - windowRect.top) - (clientRect.bottom - clientRect.top);
             int newWindowH = contentHeight + chromeH;
             int windowW = windowRect.right - windowRect.left;
-            UINT flags = SWP_NOMOVE | SWP_NOZORDER;
-            if (g_webviewWindowShown) {
-                flags |= SWP_NOACTIVATE;
-            } else {
-                flags |= SWP_SHOWWINDOW;
+            UINT flags = SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE;
+            BOOL firstShow = !g_webviewWindowShown;
+            if (firstShow) {
                 KillTimer(g_webviewHwnd, ID_TIMER_WEBVIEW_SHOW_FALLBACK);
             }
             SetWindowPos(g_webviewHwnd, NULL, 0, 0, windowW, newWindowH, flags);
+            // Reveal the window through ShowWindow rather than SWP_SHOWWINDOW so
+            // the shell registers it and creates its taskbar button.
+            if (firstShow) {
+                ShowWindow(g_webviewHwnd, SW_SHOWNOACTIVATE);
+                UpdateWindow(g_webviewHwnd);
+            }
             g_webviewWindowShown = TRUE;
             webview_sync_controller_bounds();
         }
@@ -2544,8 +2548,11 @@ static LRESULT CALLBACK WebViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 }
 
 static void ShowWebViewDialog(int width, int height) {
-    // If already open, bring to front
+    // If already open, bring to front (restoring it from the taskbar if the
+    // user minimized it).
     if (g_webviewHwnd != NULL) {
+        if (IsIconic(g_webviewHwnd)) ShowWindow(g_webviewHwnd, SW_RESTORE);
+        else ShowWindow(g_webviewHwnd, SW_SHOW);
         SetForegroundWindow(g_webviewHwnd);
         return;
     }
@@ -2579,8 +2586,9 @@ static void ShowWebViewDialog(int width, int height) {
     int posY = (screenH - height) / 2;
 
     // Use the standard overlapped frame so Windows renders the normal caption
-    // height instead of the more compact fixed-dialog title bar.
-    g_webviewHwnd = CreateWindowExW(0, L"ChromeDevLauncherWebViewWnd", L"Configuration",
+    // height instead of the more compact fixed-dialog title bar. WS_EX_APPWINDOW
+    // gives the unowned configuration window its own taskbar button.
+    g_webviewHwnd = CreateWindowExW(WS_EX_APPWINDOW, L"ChromeDevLauncherWebViewWnd", L"Configuration",
         WS_OVERLAPPEDWINDOW,
         posX, posY, width, height,
         NULL, NULL, g_hInstance, NULL);
