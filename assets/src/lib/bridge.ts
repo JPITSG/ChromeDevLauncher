@@ -144,8 +144,8 @@ export function cancelUpdateCheck() {
   postMessage({ action: "cancelUpdateCheck" });
 }
 
-export function installUpdate() {
-  postMessage({ action: "installUpdate" });
+export function installUpdate(reopenSettings = false) {
+  postMessage({ action: "installUpdate", reopenSettings });
 }
 
 export function dismissUpdate() {

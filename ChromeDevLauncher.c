@@ -449,7 +449,7 @@ static BOOL ShowConfigDialog(HWND hwndParent);
 // Self update
 static void StartUpdateCheck(BOOL automatic);
 static void CancelUpdateCheck(void);
-static void InstallPreparedUpdate(void);
+static void InstallPreparedUpdate(BOOL reopenSettings);
 static void DiscardPreparedUpdate(void);
 
 // Tray icon
@@ -529,6 +529,8 @@ static void SelfElevate(void) {
         sei.cbSize = sizeof(sei);
         sei.lpVerb = L"runas";
         sei.lpFile = szPath;
+        // Preserve the one-time updater handoff if startup needs elevation.
+        sei.lpParameters = PathGetArgsW(GetCommandLineW());
         sei.hwnd = NULL;
         sei.nShow = SW_NORMAL;
 
@@ -1173,6 +1175,16 @@ static BOOL QueryRemoteUpdateSize(UpdateCheckTask* task, ULONGLONG* size) {
     return TRUE;
 }
 
+// The bounded download size keeps this integer calculation within 64 bits.
+// GetTickCount64 supplies monotonic milliseconds; round to the nearest KiB/s.
+static DWORD CalculateUpdateSpeedKbps(ULONGLONG receivedBytes,
+                                      ULONGLONG elapsedMs) {
+    if (!elapsedMs) return 0;
+    ULONGLONG divisor = elapsedMs * 1024ULL;
+    ULONGLONG speed = (receivedBytes * 1000ULL + divisor / 2) / divisor;
+    return speed > MAXLONG ? MAXLONG : (DWORD)speed;
+}
+
 static BOOL DownloadUpdateFile(UpdateCheckTask* task,
                                ULONGLONG expectedSize) {
     if (CancelUpdateTaskIfRequested(task)) return FALSE;
@@ -1266,16 +1278,13 @@ static BOOL DownloadUpdateFile(UpdateCheckTask* task,
             break;
         }
         totalWritten += bytesWritten;
-        speedWindowBytes += bytesWritten;
+        speedWindowBytes += bytesRead;
 
         ULONGLONG now = GetTickCount64();
         ULONGLONG elapsed = now - speedWindowStarted;
         if (elapsed >= UPDATE_PROGRESS_INTERVAL_MS) {
-            ULONGLONG speed = (speedWindowBytes * 1000ULL) /
-                              (elapsed * 1024ULL);
-            if (speed == 0 && speedWindowBytes > 0) speed = 1;
-            if (speed > MAXLONG) speed = MAXLONG;
-            PublishUpdateProgress(task, (DWORD)speed);
+            PublishUpdateProgress(task,
+                CalculateUpdateSpeedKbps(speedWindowBytes, elapsed));
             speedWindowBytes = 0;
             speedWindowStarted = now;
         }
@@ -1451,16 +1460,17 @@ static HANDLE DuplicateUpdateLaunchToken(HANDLE process) {
 static BOOL LaunchUpdateTarget(LPCWSTR targetPath, LPCWSTR stagedPath,
                                LPCWSTR helperPath, DWORD helperProcessId,
                                DWORD oldProcessId, HANDLE launchToken,
-                               BOOL successfulUpdate) {
+                               BOOL successfulUpdate, BOOL reopenSettings) {
     wchar_t commandLine[MAX_PATH * 3 + 256];
     LPCWSTR finishAction = successfulUpdate
         ? L"--finish-update"
         : L"--finish-update-cleanup";
     int commandLength = swprintf_s(commandLine,
         sizeof(commandLine) / sizeof(wchar_t),
-        L"\"%s\" %s %lu %lu \"%s\" \"%s\"", targetPath, finishAction,
+        L"\"%s\" %s %lu %lu \"%s\" \"%s\"%s", targetPath, finishAction,
         (unsigned long)helperProcessId, (unsigned long)oldProcessId,
-        stagedPath, helperPath);
+        stagedPath, helperPath,
+        successfulUpdate && reopenSettings ? L" --reopen-settings-after-update" : L"");
     if (commandLength <= 0 ||
         commandLength >= (int)(sizeof(commandLine) / sizeof(wchar_t))) {
         SetLastError(ERROR_INSUFFICIENT_BUFFER);
@@ -1503,7 +1513,7 @@ static int RestartAfterUpdateFailure(LPCWSTR targetPath, LPCWSTR stagedPath,
                                      HANDLE launchToken, LPCWSTR message) {
     MessageBoxW(NULL, message, APP_NAME L" Update", MB_OK | MB_ICONERROR);
     LaunchUpdateTarget(targetPath, stagedPath, helperPath,
-                       GetCurrentProcessId(), oldProcessId, launchToken, FALSE);
+                       GetCurrentProcessId(), oldProcessId, launchToken, FALSE, FALSE);
     if (launchToken) CloseHandle(launchToken);
     DeleteUpdateTempFile(stagedPath);
     SetFileAttributesW(helperPath, FILE_ATTRIBUTE_NORMAL);
@@ -1512,7 +1522,8 @@ static int RestartAfterUpdateFailure(LPCWSTR targetPath, LPCWSTR stagedPath,
 }
 
 static int RunUpdateApplyHelper(DWORD oldProcessId, LPCWSTR readyEventName,
-                                LPCWSTR targetPath, LPCWSTR stagedPath) {
+                                LPCWSTR targetPath, LPCWSTR stagedPath,
+                                BOOL reopenSettings) {
     wchar_t expectedEventPrefix[96];
     int prefixLength = swprintf_s(expectedEventPrefix,
         sizeof(expectedEventPrefix) / sizeof(wchar_t),
@@ -1641,7 +1652,8 @@ static int RunUpdateApplyHelper(DWORD oldProcessId, LPCWSTR readyEventName,
     }
 
     if (!LaunchUpdateTarget(targetPath, stagedPath, helperPath,
-                            helperProcessId, oldProcessId, launchToken, TRUE)) {
+                            helperProcessId, oldProcessId, launchToken, TRUE,
+                            reopenSettings)) {
         DeleteFileW(targetPath);
         if (!MoveFileExW(backupPath, targetPath,
                          MOVEFILE_REPLACE_EXISTING |
@@ -1713,24 +1725,31 @@ static BOOL FinishUpdateCleanup(DWORD helperProcessId, DWORD oldProcessId,
 // Temporary updater processes stop here. Finish modes clean up the handoff
 // files and then continue normal startup; updateCompleted is true only after
 // a successful executable replacement.
-static int HandleUpdateCommandLine(BOOL* handled, BOOL* updateCompleted) {
+static int HandleUpdateCommandLine(BOOL* handled, BOOL* updateCompleted,
+                                    BOOL* reopenSettings) {
     if (handled) *handled = FALSE;
     if (updateCompleted) *updateCompleted = FALSE;
+    if (reopenSettings) *reopenSettings = FALSE;
     int argumentCount = 0;
     LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
     if (!arguments) return 0;
 
+    // This option is valid only as part of an updater handoff, never alone.
+    BOOL reopenRequested = argumentCount == 7 &&
+        wcscmp(arguments[6], L"--reopen-settings-after-update") == 0;
+    BOOL validHandoffArguments = argumentCount == 6 || reopenRequested;
     int result = 0;
-    if (argumentCount == 6 && wcscmp(arguments[1], L"--apply-update") == 0) {
+    if (validHandoffArguments && wcscmp(arguments[1], L"--apply-update") == 0) {
         DWORD oldProcessId = 0;
         if (handled) *handled = TRUE;
         if (!ParseUpdateProcessId(arguments[2], &oldProcessId)) {
             result = ERROR_INVALID_PARAMETER;
         } else {
             result = RunUpdateApplyHelper(oldProcessId, arguments[3],
-                                          arguments[4], arguments[5]);
+                                          arguments[4], arguments[5],
+                                          reopenRequested);
         }
-    } else if (argumentCount == 6 &&
+    } else if (validHandoffArguments &&
                (wcscmp(arguments[1], L"--finish-update") == 0 ||
                 wcscmp(arguments[1], L"--finish-update-cleanup") == 0)) {
         DWORD helperProcessId = 0, oldProcessId = 0;
@@ -1741,6 +1760,7 @@ static int HandleUpdateCommandLine(BOOL* handled, BOOL* updateCompleted) {
             if (recognizedHandoff && updateCompleted &&
                 wcscmp(arguments[1], L"--finish-update") == 0) {
                 *updateCompleted = TRUE;
+                if (reopenSettings) *reopenSettings = reopenRequested;
             }
         }
     }
@@ -2109,7 +2129,8 @@ static HANDLE CreateUpdateReadyEvent(DWORD processId, wchar_t* eventName,
     return readyEvent;
 }
 
-static BOOL LaunchStagedUpdate(LPCWSTR stagedPath, LPCWSTR targetPath) {
+static BOOL LaunchStagedUpdate(LPCWSTR stagedPath, LPCWSTR targetPath,
+                                BOOL reopenSettings) {
     if (!stagedPath || !targetPath || !*stagedPath || !*targetPath) {
         SetLastError(ERROR_INVALID_PARAMETER);
         return FALSE;
@@ -2144,8 +2165,9 @@ static BOOL LaunchStagedUpdate(LPCWSTR stagedPath, LPCWSTR targetPath) {
     wchar_t parameters[MAX_PATH * 2 + 512];
     int parameterLength = swprintf_s(parameters,
         sizeof(parameters) / sizeof(wchar_t),
-        L"--apply-update %lu \"%s\" \"%s\" \"%s\"",
-        (unsigned long)oldProcessId, readyEventName, targetPath, stagedPath);
+        L"--apply-update %lu \"%s\" \"%s\" \"%s\"%s",
+        (unsigned long)oldProcessId, readyEventName, targetPath, stagedPath,
+        reopenSettings ? L" --reopen-settings-after-update" : L"");
     if (parameterLength <= 0 ||
         parameterLength >= (int)(sizeof(parameters) / sizeof(wchar_t))) {
         CloseHandle(readyEvent);
@@ -2207,7 +2229,7 @@ static void DiscardPreparedUpdate(void) {
     DiscardUpdateTask(task);
 }
 
-static void InstallPreparedUpdate(void) {
+static void InstallPreparedUpdate(BOOL reopenSettings) {
     UpdateCheckTask* task = g_updateReadyTask;
     g_updateReadyTask = NULL;
     if (!task || (task->kind != UPDATE_CHECK_NEWER &&
@@ -2218,7 +2240,7 @@ static void InstallPreparedUpdate(void) {
         return;
     }
 
-    if (LaunchStagedUpdate(task->stagedPath, task->targetPath)) {
+    if (LaunchStagedUpdate(task->stagedPath, task->targetPath, reopenSettings)) {
         g_updateInstallReady = TRUE;
         free(task);  // The updater process now owns the staged file.
         if (g_webviewHwnd) PostMessageW(g_webviewHwnd, WM_CLOSE, 0, 0);
@@ -2403,7 +2425,7 @@ static HRESULT STDMETHODCALLTYPE MsgReceived_Invoke(ICoreWebView2WebMessageRecei
     } else if (strcmp(action, "cancelUpdateCheck") == 0) {
         CancelUpdateCheck();
     } else if (strcmp(action, "installUpdate") == 0) {
-        InstallPreparedUpdate();
+        InstallPreparedUpdate(json_get_bool(msg, "reopenSettings", FALSE));
     } else if (strcmp(action, "dismissUpdate") == 0) {
         DiscardPreparedUpdate();
     } else if (strcmp(action, "ignoreUpdateVersion") == 0) {
@@ -3512,8 +3534,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                     LPSTR lpCmdLine, int nCmdShow) {
     BOOL updateHelperHandled = FALSE;
     BOOL updateCompleted = FALSE;
+    BOOL reopenSettings = FALSE;
     int updateHelperResult = HandleUpdateCommandLine(
-        &updateHelperHandled, &updateCompleted);
+        &updateHelperHandled, &updateCompleted, &reopenSettings);
     if (updateHelperHandled) return updateHelperResult;
 
     (void)hPrevInstance;
@@ -3604,8 +3627,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     UpdateStatus();
     UpdateTrayTooltip();
 
-    // Successful replacements reopen Configuration with an HTML confirmation.
-    if (updateCompleted) {
+    // Reopen only for this successful update's explicit confirmation choice.
+    if (updateCompleted && reopenSettings) {
         g_updateConfirmationPending = TRUE;
         ShowConfigDialog(g_hwnd);
     }

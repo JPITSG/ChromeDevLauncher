@@ -54,15 +54,20 @@ after restart; the manual **Update** button still displays every result.
 Checks download the repository's
 [`release/ChromeDevLauncher.exe`](release/ChromeDevLauncher.exe) to the user's
 temporary directory and compare its embedded Windows file version with the
-running executable. The Update button shows download speed while checking and
-acts as a cancellable stop button. A matching remote version offers **Force
-update**; an older repository build is never installed.
+running executable. While downloading, the red Update button displays live
+speed rounded to whole kilobytes per second, for example
+**Checking (100kb/s)...** (1 kilobyte = 1024 bytes). It remains a cancellable stop
+button and is disabled while cancellation is pending. A matching remote version
+offers **Force update**; an older repository build is never installed.
 
 Accepted updates use an elevated helper to replace the running executable,
 roll back if the updated application cannot start, clean up temporary files,
-and reopen Configuration with the installed version confirmation. Cancelling
-the download, result prompt, or UAC approval leaves the current version
-running.
+and restart the application. The update confirmation (including **Force update**)
+has an unchecked **Reopen settings after update** checkbox. Select it to reopen
+Configuration with the installed version confirmation after a successful update;
+otherwise settings stay closed. This choice applies only to that update and is
+not saved. Cancelling the download, result prompt, or UAC approval leaves the
+current version running and discards the choice.
 
 ## System Tray Menu
 
@@ -84,6 +89,25 @@ make clean && make
 This builds the React/shadcn frontend (`assets/`), embeds it into the executable as a resource, and cross-compiles with MinGW.
 
 Output: `release/ChromeDevLauncher.exe`
+
+## Verification
+
+After building, run the focused updater checks on Linux (Python 3 and GCC):
+
+```bash
+python3 -m unittest discover -s tests -p 'test_updater.py' -v
+```
+
+With Python Playwright and Chromium installed, test the built configuration UI:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_update_ui.py' -v
+```
+
+Set `CHROME_EXECUTABLE` to use an existing Chromium binary. These tests use
+mock updater APIs and a mock WebView bridge; they never install an update or
+restart the application. Windows UAC, replacement, rollback, and WebView2
+runtime behavior still require verification on Windows.
 
 ## License
 

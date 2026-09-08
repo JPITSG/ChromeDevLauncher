@@ -57,6 +57,7 @@ export default function ConfigView({
         }
       : null
   );
+  const [reopenSettings, setReopenSettings] = useState(false);
   const automaticUpdateStarted = useRef(false);
 
   useEffect(() => {
@@ -64,6 +65,7 @@ export default function ConfigView({
       if (result.path) setChromePath(result.path);
     });
     const removeResultListener = onUpdateResult((result) => {
+      setReopenSettings(false);
       setUpdateChecking(false);
       setUpdateCancelling(false);
       setUpdateSpeedKbps(null);
@@ -144,6 +146,7 @@ export default function ConfigView({
       cancelUpdateCheck();
       return;
     }
+    setReopenSettings(false);
     setUpdateAlert(null);
     setUpdateChecking(true);
     setUpdateCancelling(false);
@@ -155,7 +158,7 @@ export default function ConfigView({
     setUpdateChecking(true);
     setUpdateCancelling(false);
     setUpdateSpeedKbps(null);
-    installUpdate();
+    installUpdate(reopenSettings);
   }
 
   function handleDismissUpdate() {
@@ -164,12 +167,14 @@ export default function ConfigView({
     } else {
       dismissUpdate();
     }
+    setReopenSettings(false);
     setUpdateAlert(null);
   }
 
   function handleIgnoreUpdateVersion() {
     if (!updateAlert?.remoteVersion) return;
     ignoreUpdateVersion(updateAlert.remoteVersion);
+    setReopenSettings(false);
     setUpdateAlert(null);
   }
 
@@ -269,7 +274,7 @@ export default function ConfigView({
               : updateChecking
                 ? updateSpeedKbps === null
                   ? "Checking..."
-                  : `Checking (${updateSpeedKbps.toLocaleString()} KB/s)...`
+                  : `Checking (${updateSpeedKbps}kb/s)...`
                 : "Update"}
           </Button>
           <Button
@@ -317,6 +322,19 @@ export default function ConfigView({
                   {updateAlert.remoteVersion}
                 </dd>
               </dl>
+            )}
+            {(updateAlert.status === "newer" || updateAlert.status === "same") && (
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="reopenSettings"
+                  checked={reopenSettings}
+                  disabled={updateChecking}
+                  onChange={(e) => setReopenSettings(e.target.checked)}
+                />
+                <Label htmlFor="reopenSettings" className="cursor-pointer">
+                  Reopen settings after update
+                </Label>
+              </div>
             )}
             <div className="flex justify-end gap-2">
               {updateAlert.status === "newer" && updateAlert.automatic && (
