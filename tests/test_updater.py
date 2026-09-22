@@ -31,12 +31,12 @@ class UpdaterTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
         harness = (ROOT / "tests/updater_stubs.c").read_text()
-        for name in ("CalculateUpdateSpeedKbps", "ParseUpdateProcessId",
+        for name in ("CalculateUpdateProgressPercent", "ParseUpdateProcessId",
                      "LaunchUpdateTarget", "HandleUpdateCommandLine"):
             harness += "\n" + function(name)
         harness += r'''
-unsigned speed(unsigned long long bytes, unsigned long long ms) {
-    return CalculateUpdateSpeedKbps(bytes, ms);
+unsigned progress(unsigned long long received, unsigned long long total) {
+    return CalculateUpdateProgressPercent(received, total);
 }
 const wchar_t* launch(int success, int reopen, int token) {
     LaunchUpdateTarget(L"C:\\Program Files\\Launcher.exe",
@@ -60,8 +60,8 @@ int route(int argc, wchar_t** argv, int recognized, int* outputs) {
         subprocess.run(["gcc", "-shared", "-fPIC", "-Wall", "-Werror",
                         str(source), "-o", str(library)], check=True)
         cls.lib = ctypes.CDLL(str(library))
-        cls.lib.speed.argtypes = [ctypes.c_ulonglong, ctypes.c_ulonglong]
-        cls.lib.speed.restype = ctypes.c_uint
+        cls.lib.progress.argtypes = [ctypes.c_ulonglong, ctypes.c_ulonglong]
+        cls.lib.progress.restype = ctypes.c_uint
         cls.lib.launch.argtypes = [ctypes.c_int] * 3
         cls.lib.launch.restype = ctypes.c_wchar_p
         cls.lib.route.argtypes = [ctypes.c_int,
@@ -78,16 +78,16 @@ int route(int argc, wchar_t** argv, int recognized, int* outputs) {
         result = self.lib.route(len(args), argv, recognized, outputs)
         return result, list(outputs)
 
-    def test_speed_rounding_and_elapsed_time(self):
-        for received, elapsed, expected in (
-            (25600, 250, 100), (25728, 250, 101), (25727, 250, 100),
-            (1, 1000, 0), (512, 1000, 1), (0, 250, 0),
-            (1024, 0, 0), (1024, 500, 2), (1024, 2000, 1),
-            (100 * 1024 * 1024, 250, 409600),
-            (100 * 1024 * 1024, 2**32, 0),
+    def test_progress_percent_rounds_down(self):
+        maximum = 100 * 1024 * 1024
+        for received, total, expected in (
+            (0, 1000, 0), (9, 1000, 0), (10, 1000, 1),
+            (1, 3, 33), (2, 3, 66), (999, 1000, 99),
+            (1000, 1000, 100), (2000, 1000, 100), (5, 0, 0),
+            (maximum - 1, maximum, 99), (maximum, maximum, 100),
         ):
-            with self.subTest(received=received, elapsed=elapsed):
-                self.assertEqual(self.lib.speed(received, elapsed), expected)
+            with self.subTest(received=received, total=total):
+                self.assertEqual(self.lib.progress(received, total), expected)
 
     def test_successful_relaunch_round_trip(self):
         for reopen in (False, True):
@@ -146,11 +146,18 @@ int route(int argc, wchar_t** argv, int recognized, int* outputs) {
         self.assertIn("PathGetArgsW(GetCommandLineW())", function("SelfElevate"))
         self.assertNotIn("reopenSettings", function("SaveConfigToRegistry"))
         download = function("DownloadUpdateFile")
-        self.assertIn("speedWindowBytes += bytesRead", download)
-        self.assertIn("GetTickCount64()", download)
-        self.assertIn("elapsed >= UPDATE_PROGRESS_INTERVAL_MS", download)
+        # 0% once the body transfer starts, then only when the percentage changes.
+        self.assertIn("PublishUpdateProgress(task, publishedPercent);\n    BYTE buffer",
+                      download)
+        self.assertIn("CalculateUpdateProgressPercent(totalWritten, expectedSize)",
+                      download)
+        self.assertIn("if (percent != publishedPercent)", download)
         self.assertIn("InterlockedCompareExchange(&g_updateProgressPosted",
                       function("PublishUpdateProgress"))
+        self.assertIn("g_configViewReady && percent >= 0",
+                      function("webview_send_current_update_progress"))
+        self.assertIn("webview_send_current_update_progress();",
+                      function("MsgReceived_Invoke"))
 
     def test_version_metadata_is_synchronized(self):
         package = json.loads((ROOT / "assets/package.json").read_text())

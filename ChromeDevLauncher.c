@@ -88,7 +88,6 @@
 // Self update
 #define UPDATE_URL L"https://github.com/JPITSG/ChromeDevLauncher/raw/refs/heads/main/release/ChromeDevLauncher.exe"
 #define UPDATE_MAX_BYTES (100ULL * 1024ULL * 1024ULL)
-#define UPDATE_PROGRESS_INTERVAL_MS 250
 #define UPDATE_HELPER_READY_MS 10000
 #define UPDATE_HELPER_WAIT_MS 120000
 
@@ -185,7 +184,7 @@ static HWINEVENTHOOK g_hWinEventHook = NULL;  // Hook for real-time window detec
 static volatile LONG g_updateCheckPending = FALSE;
 static volatile LONG g_updateCheckAutomatic = FALSE;
 static volatile LONG g_updateRequestSequence = 0;
-static volatile LONG g_updateSpeedKbps = 0;
+static volatile LONG g_updateProgressPercent = -1; // -1 until the download starts
 static volatile LONG g_updateProgressPosted = FALSE;
 static HANDLE g_updateCancelEvent = NULL;
 static UpdateCheckTask* volatile g_updatePostedResult = NULL;
@@ -888,13 +887,22 @@ static BOOL CancelUpdateTaskIfRequested(UpdateCheckTask* task) {
     return TRUE;
 }
 
-static void PublishUpdateProgress(UpdateCheckTask* task, DWORD speedKbps) {
+// Round down to whole percent so 100 appears only once every byte has
+// arrived. Download sizes are bounded by UPDATE_MAX_BYTES.
+static DWORD CalculateUpdateProgressPercent(ULONGLONG receivedBytes,
+                                            ULONGLONG totalBytes) {
+    if (!totalBytes) return 0;
+    if (receivedBytes >= totalBytes) return 100;
+    return (DWORD)(receivedBytes * 100ULL / totalBytes);
+}
+
+static void PublishUpdateProgress(UpdateCheckTask* task, DWORD percent) {
     if (!task || CancelUpdateTaskIfRequested(task) ||
         !IsWindow(task->targetWindow)) {
         return;
     }
 
-    InterlockedExchange(&g_updateSpeedKbps, (LONG)speedKbps);
+    InterlockedExchange(&g_updateProgressPercent, (LONG)percent);
     if (InterlockedCompareExchange(&g_updateProgressPosted, TRUE, FALSE) == FALSE &&
         !PostMessageW(task->targetWindow, WM_APP_UPDATE_PROGRESS, 0, 0)) {
         InterlockedExchange(&g_updateProgressPosted, FALSE);
@@ -1175,16 +1183,6 @@ static BOOL QueryRemoteUpdateSize(UpdateCheckTask* task, ULONGLONG* size) {
     return TRUE;
 }
 
-// The bounded download size keeps this integer calculation within 64 bits.
-// GetTickCount64 supplies monotonic milliseconds; round to the nearest KiB/s.
-static DWORD CalculateUpdateSpeedKbps(ULONGLONG receivedBytes,
-                                      ULONGLONG elapsedMs) {
-    if (!elapsedMs) return 0;
-    ULONGLONG divisor = elapsedMs * 1024ULL;
-    ULONGLONG speed = (receivedBytes * 1000ULL + divisor / 2) / divisor;
-    return speed > MAXLONG ? MAXLONG : (DWORD)speed;
-}
-
 static BOOL DownloadUpdateFile(UpdateCheckTask* task,
                                ULONGLONG expectedSize) {
     if (CancelUpdateTaskIfRequested(task)) return FALSE;
@@ -1233,8 +1231,8 @@ static BOOL DownloadUpdateFile(UpdateCheckTask* task,
 
     BOOL ok = TRUE;
     ULONGLONG totalWritten = 0;
-    ULONGLONG speedWindowBytes = 0;
-    ULONGLONG speedWindowStarted = GetTickCount64();
+    DWORD publishedPercent = 0;
+    PublishUpdateProgress(task, publishedPercent);
     BYTE buffer[64 * 1024];
     while (ok) {
         if (CancelUpdateTaskIfRequested(task)) {
@@ -1278,15 +1276,11 @@ static BOOL DownloadUpdateFile(UpdateCheckTask* task,
             break;
         }
         totalWritten += bytesWritten;
-        speedWindowBytes += bytesRead;
 
-        ULONGLONG now = GetTickCount64();
-        ULONGLONG elapsed = now - speedWindowStarted;
-        if (elapsed >= UPDATE_PROGRESS_INTERVAL_MS) {
-            PublishUpdateProgress(task,
-                CalculateUpdateSpeedKbps(speedWindowBytes, elapsed));
-            speedWindowBytes = 0;
-            speedWindowStarted = now;
+        DWORD percent = CalculateUpdateProgressPercent(totalWritten, expectedSize);
+        if (percent != publishedPercent) {
+            PublishUpdateProgress(task, percent);
+            publishedPercent = percent;
         }
     }
 
@@ -1846,12 +1840,20 @@ static void webview_send_update_result(LPCWSTR status, LPCWSTR title,
         status, title, message, L"", L"", FALSE);
 }
 
-static void webview_send_update_progress(DWORD speedKbps) {
+static void webview_send_update_progress(DWORD percent) {
     wchar_t script[160];
     int written = swprintf_s(script, sizeof(script) / sizeof(wchar_t),
-        L"window.onUpdateProgress({\"kilobytesPerSecond\":%lu})",
-        (unsigned long)speedKbps);
+        L"window.onUpdateProgress({\"percent\":%lu})",
+        (unsigned long)percent);
     if (written > 0) webview_execute_script(script);
+}
+
+static void webview_send_current_update_progress(void) {
+    LONG percent = InterlockedCompareExchange(&g_updateProgressPercent, 0, 0);
+    if (g_configViewReady && percent >= 0 &&
+        InterlockedCompareExchange(&g_updateCheckPending, FALSE, FALSE) == TRUE) {
+        webview_send_update_progress((DWORD)percent);
+    }
 }
 
 static void DiscardPendingUpdateNotice(void) {
@@ -1900,7 +1902,7 @@ static void StartUpdateCheck(BOOL automatic) {
         }
     }
     ResetEvent(g_updateCancelEvent);
-    InterlockedExchange(&g_updateSpeedKbps, 0);
+    InterlockedExchange(&g_updateProgressPercent, -1);
     InterlockedExchange(&g_updateProgressPosted, FALSE);
 
     UpdateCheckTask* task = (UpdateCheckTask*)calloc(1, sizeof(UpdateCheckTask));
@@ -2030,7 +2032,7 @@ static void QueueUpdateNotice(UpdateCheckTask* task) {
 static void HandleCompletedUpdateCheck(UpdateCheckTask* task) {
     if (!task) return;
     InterlockedExchange(&g_updateProgressPosted, FALSE);
-    InterlockedExchange(&g_updateSpeedKbps, 0);
+    InterlockedExchange(&g_updateProgressPercent, -1);
 
     if (task->automatic && !g_config.autoCheckForUpdates) {
         DiscardUpdateTask(task);
@@ -2415,6 +2417,9 @@ static HRESULT STDMETHODCALLTYPE MsgReceived_Invoke(ICoreWebView2WebMessageRecei
                 json_get_bool(msg, "checkAutomatically", FALSE);
             g_configViewReady = TRUE;
             PresentPendingUpdateNotice();
+            // Progress is published only when it changes, so a dialog opened
+            // during a background download needs the current value now.
+            webview_send_current_update_progress();
             if (checkAutomatically && g_config.autoCheckForUpdates &&
                 !g_updateConfirmationPending && !updateWorkAlreadyActive) {
                 StartUpdateCheck(TRUE);
@@ -3426,13 +3431,7 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
 
         case WM_APP_UPDATE_PROGRESS:
             InterlockedExchange(&g_updateProgressPosted, FALSE);
-            if (InterlockedCompareExchange(&g_updateCheckPending,
-                                           FALSE, FALSE) == TRUE &&
-                g_configViewReady) {
-                DWORD speedKbps = (DWORD)InterlockedCompareExchange(
-                    &g_updateSpeedKbps, 0, 0);
-                webview_send_update_progress(speedKbps);
-            }
+            webview_send_current_update_progress();
             return 0;
 
         case WM_APP_UPDATE_RESULT: {

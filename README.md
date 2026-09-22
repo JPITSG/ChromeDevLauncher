@@ -54,10 +54,10 @@ after restart; the manual **Update** button still displays every result.
 Checks download the repository's
 [`release/ChromeDevLauncher.exe`](release/ChromeDevLauncher.exe) to the user's
 temporary directory and compare its embedded Windows file version with the
-running executable. While downloading, the red Update button displays live
-speed rounded to whole kilobytes per second, for example
-**Checking (100kb/s)...** (1 kilobyte = 1024 bytes). It remains a cancellable stop
-button and is disabled while cancellation is pending. A matching remote version
+running executable. While downloading, the red Update button displays how much
+of the download has completed, rounded down to a whole percentage, for example
+**Checking (42%)...**. Click it again to stop the check and remove the partial
+download; it is disabled while cancellation is pending. A matching remote version
 offers **Force update**; an older repository build is never installed.
 
 Accepted updates use an elevated helper to replace the running executable,
