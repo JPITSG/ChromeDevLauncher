@@ -8,7 +8,7 @@ A Windows 10+ system tray utility that launches Chrome with remote debugging ena
 - **Port Forwarding** - Automatically sets up netsh port forwards for all non-loopback network interfaces
 - **System Tray** - Runs quietly in the system tray with status monitoring
 - **Status Display** - Shows Chrome version, API status, and active port forwards
-- **Configuration** - Registry-backed settings with modern WebView2 configuration dialog
+- **Configuration** - Registry-backed settings with modern WebView2 configuration dialog that sizes itself to its content and cannot be resized or maximized
 - **Start with Windows** - Optional launch in the tray when you sign in to Windows
 - **Self Update** - Compares embedded local and repository versions, installs newer builds, or force-reinstalls the same version
 - **Auto-Elevation** - Automatically requests administrator privileges (required for port forwarding)
@@ -105,12 +105,19 @@ Output: `release/ChromeDevLauncher.exe`
 
 ## Verification
 
-After building, run the focused updater and startup checks on Linux (Python 3 and GCC):
+After building, run the focused updater, startup and dialog frame checks on
+Linux (Python 3 and GCC):
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_updater.py' -v
 python3 -m unittest discover -s tests -p 'test_startup.py' -v
+python3 -m unittest discover -s tests -p 'test_fixed_frame.py' -v
 ```
+
+The frame check compiles the configuration dialog's fixed-size frame handling
+against stubbed window calls (edge and corner drags, the Size and Maximize
+commands, and the track size that also stops Snap) and checks that every place
+the app sizes the dialog pins the size first.
 
 With Python Playwright and Chromium installed, test the built configuration UI:
 
