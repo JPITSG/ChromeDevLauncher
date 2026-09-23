@@ -56,6 +56,9 @@
 #define REG_VALUE_AUTO_UPDATE L"AutoCheckForUpdates"
 #define REG_VALUE_IGNORED_UPDATE_VERSION L"IgnoredUpdateVersion"
 #define REG_VALUE_CONFIGURED L"Configured"
+#define STARTUP_RUN_KEY_W L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+#define STARTUP_APPROVED_RUN_KEY_W \
+    L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run"
 
 // Tray icon
 #define IDI_TRAYICON 101
@@ -679,6 +682,68 @@ static void MarkAsConfigured(void) {
                        (const BYTE*)&configured, sizeof(configured));
         RegCloseKey(hKey);
     }
+}
+
+// ============================================================================
+// Start with Windows
+// ============================================================================
+
+static BOOL GetStartupCommand(wchar_t* command, size_t commandCch) {
+    wchar_t path[MAX_PATH];
+    DWORD length = GetModuleFileNameW(NULL, path, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) return FALSE;
+    return swprintf_s(command, commandCch, L"\"%s\"", path) > 0;
+}
+
+static BOOL IsStartWithWindowsEnabled(void) {
+    wchar_t expected[MAX_PATH + 2];
+    wchar_t actual[MAX_PATH + 2];
+    DWORD size = sizeof(actual);
+    if (!GetStartupCommand(expected, sizeof(expected) / sizeof(wchar_t)) ||
+        RegGetValueW(HKEY_CURRENT_USER, STARTUP_RUN_KEY_W, REG_APPNAME,
+                     RRF_RT_REG_SZ, NULL, actual, &size) != ERROR_SUCCESS ||
+        _wcsicmp(actual, expected) != 0) {
+        return FALSE;
+    }
+
+    // Task Manager can disable a Run entry without removing it. An odd first
+    // byte in StartupApproved means disabled; no marker means enabled.
+    BYTE approved[64];
+    size = sizeof(approved);
+    if (RegGetValueW(HKEY_CURRENT_USER, STARTUP_APPROVED_RUN_KEY_W, REG_APPNAME,
+                     RRF_RT_REG_BINARY, NULL, approved, &size) != ERROR_SUCCESS ||
+        size == 0) {
+        return TRUE;
+    }
+    return (approved[0] & 1) == 0;
+}
+
+static LONG SetStartWithWindows(BOOL enable) {
+    LONG result;
+    if (enable) {
+        wchar_t command[MAX_PATH + 2];
+        HKEY key;
+        if (!GetStartupCommand(command, sizeof(command) / sizeof(wchar_t))) {
+            return ERROR_BAD_PATHNAME;
+        }
+        result = RegCreateKeyExW(HKEY_CURRENT_USER, STARTUP_RUN_KEY_W, 0, NULL,
+                                 REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, NULL,
+                                 &key, NULL);
+        if (result != ERROR_SUCCESS) return result;
+        result = RegSetValueExW(key, REG_APPNAME, 0, REG_SZ, (const BYTE*)command,
+                                (DWORD)((wcslen(command) + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    } else {
+        result = RegDeleteKeyValueW(HKEY_CURRENT_USER, STARTUP_RUN_KEY_W, REG_APPNAME);
+        if (result == ERROR_FILE_NOT_FOUND) result = ERROR_SUCCESS;
+    }
+    if (result != ERROR_SUCCESS) return result;
+
+    // Clear a disabled marker when enabling, and leave nothing behind when
+    // disabling. Only this application's value is touched.
+    result = RegDeleteKeyValueW(HKEY_CURRENT_USER, STARTUP_APPROVED_RUN_KEY_W,
+                                REG_APPNAME);
+    return result == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : result;
 }
 
 // ============================================================================
@@ -1780,10 +1845,12 @@ static void webview_push_init_config(void) {
         L"window.onInit({\"view\":\"config\",\"config\":{"
         L"\"chromePath\":\"%s\",\"debugPort\":%d,"
         L"\"connectAddress\":\"%s\",\"statusCheckInterval\":%d,"
+        L"\"startWithWindows\":%s,"
         L"\"autoCheckForUpdates\":%s,\"updateCheckPending\":%s,"
         L"\"updatePromptPending\":%s},"
         L"\"updateCompletedVersion\":\"%s\"})",
         wPath, g_config.debugPort, wAddr, g_config.statusCheckInterval,
+        IsStartWithWindowsEnabled() ? L"true" : L"false",
         g_config.autoCheckForUpdates ? L"true" : L"false",
         (InterlockedCompareExchange(&g_updateCheckPending,
                                     FALSE, FALSE) == TRUE ||
@@ -2449,6 +2516,23 @@ static HRESULT STDMETHODCALLTYPE MsgReceived_Invoke(ICoreWebView2WebMessageRecei
         json_get_string(msg, "connectAddress", connectAddress, sizeof(connectAddress));
         json_get_int(msg, "debugPort", &debugPort);
         json_get_int(msg, "statusCheckInterval", &statusCheckInterval);
+
+        // Only a changed option touches the Run entry, so saving unrelated
+        // settings leaves an entry for another copy of the executable alone.
+        BOOL startupEnabled = IsStartWithWindowsEnabled();
+        BOOL startWithWindows = json_get_bool(msg, "startWithWindows", startupEnabled);
+        if (startWithWindows != startupEnabled) {
+            LONG result = SetStartWithWindows(startWithWindows);
+            if (result != ERROR_SUCCESS) {
+                wchar_t error[256];
+                swprintf_s(error, sizeof(error) / sizeof(wchar_t),
+                    L"Could not change Start with Windows (Windows error %ld).\n\n"
+                    L"Please try saving again.", result);
+                MessageBoxW(g_webviewHwnd, error, APP_NAME, MB_OK | MB_ICONERROR);
+                free(msg);
+                return S_OK;
+            }
+        }
 
         // Write to global config
         MultiByteToWideChar(CP_UTF8, 0, chromePath, -1, g_config.chromePath, MAX_PATH);

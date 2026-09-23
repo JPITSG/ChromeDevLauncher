@@ -9,6 +9,7 @@ A Windows 10+ system tray utility that launches Chrome with remote debugging ena
 - **System Tray** - Runs quietly in the system tray with status monitoring
 - **Status Display** - Shows Chrome version, API status, and active port forwards
 - **Configuration** - Registry-backed settings with modern WebView2 configuration dialog
+- **Start with Windows** - Optional launch in the tray when you sign in to Windows
 - **Self Update** - Compares embedded local and repository versions, installs newer builds, or force-reinstalls the same version
 - **Auto-Elevation** - Automatically requests administrator privileges (required for port forwarding)
 - **Single Instance** - Prevents multiple instances from running simultaneously
@@ -34,12 +35,21 @@ A Windows 10+ system tray utility that launches Chrome with remote debugging ena
 - **Debug Port** - Remote debugging port (default: 9222)
 - **Chrome IP Address** - Address Chrome binds to (default: 127.0.0.1)
 - **Status Check Interval** - How often to poll Chrome DevTools API (default: 60 seconds)
+- **Start with Windows** - Launches in the tray when you sign in to Windows (off by default)
 - **Automatically Check for Updates** - Checks at startup, whenever Configure opens, and every 60 minutes (enabled by default)
 
 Settings are stored in the Windows Registry at:
 ```
 HKEY_CURRENT_USER\SOFTWARE\JPIT\ChromeDevLauncher
 ```
+
+**Start with Windows** takes effect when you click **Save**. It adds or removes
+a `ChromeDevLauncher` value under
+`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` pointing to
+the current executable. An entry disabled in Task Manager's startup apps shows
+as off; enabling the toggle re-enables it. The application's usual UAC elevation
+prompt still applies at sign-in because port forwarding requires administrator
+privileges.
 
 The configuration footer displays the application version as
 `v<application version>`.
@@ -92,10 +102,11 @@ Output: `release/ChromeDevLauncher.exe`
 
 ## Verification
 
-After building, run the focused updater checks on Linux (Python 3 and GCC):
+After building, run the focused updater and startup checks on Linux (Python 3 and GCC):
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_updater.py' -v
+python3 -m unittest discover -s tests -p 'test_startup.py' -v
 ```
 
 With Python Playwright and Chromium installed, test the built configuration UI:
@@ -105,9 +116,10 @@ python3 -m unittest discover -s tests -p 'test_update_ui.py' -v
 ```
 
 Set `CHROME_EXECUTABLE` to use an existing Chromium binary. These tests use
-mock updater APIs and a mock WebView bridge; they never install an update or
-restart the application. Windows UAC, replacement, rollback, and WebView2
-runtime behavior still require verification on Windows.
+mock Windows APIs and a mock WebView bridge; they never change Windows startup
+entries, install an update, or restart the application. Windows sign-in, UAC,
+replacement, rollback, and WebView2 runtime behavior still require verification
+on Windows.
 
 ## License
 

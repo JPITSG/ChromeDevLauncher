@@ -3,6 +3,7 @@ export interface ConfigData {
   debugPort: number;
   connectAddress: string;
   statusCheckInterval: number;
+  startWithWindows: boolean;
   autoCheckForUpdates: boolean;
   updateCheckPending: boolean;
   updatePromptPending: boolean;
@@ -120,6 +121,7 @@ export function saveSettings(config: ConfigData) {
     debugPort: config.debugPort,
     connectAddress: config.connectAddress,
     statusCheckInterval: config.statusCheckInterval,
+    startWithWindows: config.startWithWindows,
     autoCheckForUpdates: config.autoCheckForUpdates,
   });
 }

@@ -20,6 +20,7 @@ import { Button } from "./components/ui/button";
 import { Checkbox } from "./components/ui/checkbox";
 import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
+import { Switch } from "./components/ui/switch";
 
 interface Props {
   config: ConfigData;
@@ -35,6 +36,9 @@ export default function ConfigView({
   const [connectAddress, setConnectAddress] = useState(config.connectAddress);
   const [statusCheckInterval, setStatusCheckInterval] = useState(
     String(config.statusCheckInterval)
+  );
+  const [startWithWindows, setStartWithWindows] = useState(
+    config.startWithWindows ?? false
   );
   const [autoCheckForUpdates, setAutoCheckForUpdates] = useState(
     config.autoCheckForUpdates ?? true
@@ -138,6 +142,7 @@ export default function ConfigView({
       debugPort: parseInt(debugPort, 10),
       connectAddress: connectAddress || "127.0.0.1",
       statusCheckInterval: parseInt(statusCheckInterval, 10),
+      startWithWindows,
       autoCheckForUpdates,
       updateCheckPending: config.updateCheckPending,
       updatePromptPending: config.updatePromptPending,
@@ -232,6 +237,27 @@ export default function ConfigView({
         {errors.statusCheckInterval && (
           <p className="text-red-500 text-xs">{errors.statusCheckInterval}</p>
         )}
+      </div>
+
+      <div className="flex items-start justify-between gap-3 pt-1">
+        <div className="space-y-0.5">
+          <Label htmlFor="start-with-windows" className="cursor-pointer">
+            Start with Windows
+          </Label>
+          <p
+            id="start-with-windows-description"
+            className="text-neutral-500 text-[11px] leading-snug"
+          >
+            Launches in the tray when you sign in to Windows.
+          </p>
+        </div>
+        <Switch
+          id="start-with-windows"
+          aria-describedby="start-with-windows-description"
+          checked={startWithWindows}
+          onCheckedChange={setStartWithWindows}
+          className="mt-0.5"
+        />
       </div>
 
       <div className="flex items-start gap-2 pt-1">
