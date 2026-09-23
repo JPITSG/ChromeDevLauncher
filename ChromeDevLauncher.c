@@ -447,6 +447,7 @@ static BOOL IsFirstLaunch(void);
 static void MarkAsConfigured(void);
 static void SetDefaultConfig(Configuration* config);
 static BOOL ShowConfigDialog(HWND hwndParent);
+static void ShowWebViewDialog(int width, int height);
 
 // Self update
 static void StartUpdateCheck(BOOL automatic);
@@ -2115,7 +2116,11 @@ static void HandleCompletedUpdateCheck(UpdateCheckTask* task) {
     if (task->automatic && task->kind == UPDATE_CHECK_NEWER) {
         BOOL configAlreadyOpen = (g_webviewHwnd != NULL);
         QueueUpdateNotice(task);
-        if (!configAlreadyOpen) {
+        if (configAlreadyOpen) {
+            // Restore and raise the existing editing session without starting
+            // another blocking configuration loop or resetting its state.
+            ShowWebViewDialog(480, 340);
+        } else {
             ShowConfigDialog(g_hwnd);
             if (!g_webviewHwnd) DiscardPendingUpdateNotice();
         }

@@ -56,9 +56,12 @@ The configuration footer displays the application version as
 
 ## Updates
 
-Automatic checks are silent unless a newer version is available. A newer
-build opens Configuration and displays the update prompt. **Ignore this
-version** suppresses that version during later automatic checks, including
+Automatic checks continue every 60 minutes while the app runs in the tray,
+even with Configuration closed, and are silent unless a newer version is available.
+A newer build opens Configuration and displays the update prompt. If Configuration
+is already open, it is restored from the taskbar if minimized and brought to the
+foreground without losing unsaved edits. **Ignore this version** suppresses that
+version during later automatic checks, including
 after restart; the manual **Update** button still displays every result.
 
 Checks download the repository's

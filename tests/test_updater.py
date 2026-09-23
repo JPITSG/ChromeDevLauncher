@@ -159,6 +159,21 @@ int route(int argc, wchar_t** argv, int recognized, int* outputs) {
         self.assertIn("webview_send_current_update_progress();",
                       function("MsgReceived_Invoke"))
 
+    def test_automatic_update_reveals_existing_configuration(self):
+        # Keep the real existing-window path; new WebView creation belongs to
+        # Windows and is represented by ShowConfigDialog in this harness.
+        show = function("ShowWebViewDialog")
+        show = show[:show.index("    CoInitializeEx")] + "}"
+        harness = (ROOT / "tests/update_notice_stubs.c").read_text().replace(
+            "/* PRODUCTION FUNCTIONS */",
+            show + "\n" + function("HandleCompletedUpdateCheck"))
+        source = Path(self.temp.name) / "update_notice.c"
+        binary = Path(self.temp.name) / "update_notice"
+        source.write_text(harness)
+        subprocess.run(["gcc", "-Wall", "-Werror", str(source),
+                        "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
+
     def test_version_metadata_is_synchronized(self):
         package = json.loads((ROOT / "assets/package.json").read_text())
         lock = json.loads((ROOT / "assets/package-lock.json").read_text())
