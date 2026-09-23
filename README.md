@@ -47,7 +47,7 @@ HKEY_CURRENT_USER\SOFTWARE\JPIT\ChromeDevLauncher
 a `ChromeDevLauncher` value under
 `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` pointing to
 the current executable. An entry disabled in Task Manager's startup apps shows
-as off; enabling the toggle re-enables it. The application's usual UAC elevation
+as off; selecting the checkbox re-enables it. The application's usual UAC elevation
 prompt still applies at sign-in because port forwarding requires administrator
 privileges.
 

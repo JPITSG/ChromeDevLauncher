@@ -56,15 +56,15 @@ class UpdateUITests(unittest.TestCase):
         self.page.close()
 
     def test_start_with_windows_save_and_cancel(self):
-        toggle = self.page.get_by_role("switch", name="Start with Windows", exact=True)
-        expect(toggle).not_to_be_checked()
+        checkbox = self.page.get_by_role("checkbox", name="Start with Windows", exact=True)
+        expect(checkbox).not_to_be_checked()
         expect(self.page.get_by_text(
             "Launches in the tray when you sign in to Windows.", exact=True
         )).to_be_visible()
         updates = self.page.get_by_label("Automatically check for updates", exact=True)
-        self.assertLess(toggle.bounding_box()["y"], updates.bounding_box()["y"])
+        self.assertLess(checkbox.bounding_box()["y"], updates.bounding_box()["y"])
         self.page.get_by_text("Start with Windows", exact=True).click()
-        expect(toggle).to_be_checked()
+        expect(checkbox).to_be_checked()
         self.assertIsNone(self.last_message("saveSettings"))
         self.page.get_by_role("button", name="Cancel", exact=True).click()
         self.assertEqual(self.last_message("close"), {"action": "close"})
@@ -72,16 +72,16 @@ class UpdateUITests(unittest.TestCase):
         # The mock host leaves the dialog open, so exercise its Save payload too.
         self.page.get_by_role("button", name="Save", exact=True).click()
         self.assertTrue(self.last_message("saveSettings")["startWithWindows"])
-        toggle.focus()
+        checkbox.focus()
         self.page.keyboard.press("Space")
-        expect(toggle).not_to_be_checked()
+        expect(checkbox).not_to_be_checked()
         self.page.get_by_role("button", name="Save", exact=True).click()
         self.assertFalse(self.last_message("saveSettings")["startWithWindows"])
 
     def test_start_with_windows_loads_enabled_state(self):
         self.page.goto((ROOT / "assets/dist/index.html").as_uri() + "?startup=true")
-        toggle = self.page.get_by_role("switch", name="Start with Windows", exact=True)
-        expect(toggle).to_be_checked()
+        checkbox = self.page.get_by_role("checkbox", name="Start with Windows", exact=True)
+        expect(checkbox).to_be_checked()
         self.page.get_by_role("button", name="Save", exact=True).click()
         self.assertTrue(self.last_message("saveSettings")["startWithWindows"])
 

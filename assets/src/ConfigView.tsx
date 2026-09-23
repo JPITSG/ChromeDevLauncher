@@ -20,7 +20,6 @@ import { Button } from "./components/ui/button";
 import { Checkbox } from "./components/ui/checkbox";
 import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
-import { Switch } from "./components/ui/switch";
 
 interface Props {
   config: ConfigData;
@@ -239,7 +238,14 @@ export default function ConfigView({
         )}
       </div>
 
-      <div className="flex items-start justify-between gap-3 pt-1">
+      <div className="flex items-start gap-2 pt-1">
+        <Checkbox
+          id="start-with-windows"
+          aria-describedby="start-with-windows-description"
+          className="mt-0.5"
+          checked={startWithWindows}
+          onChange={(e) => setStartWithWindows(e.target.checked)}
+        />
         <div className="space-y-0.5">
           <Label htmlFor="start-with-windows" className="cursor-pointer">
             Start with Windows
@@ -251,13 +257,6 @@ export default function ConfigView({
             Launches in the tray when you sign in to Windows.
           </p>
         </div>
-        <Switch
-          id="start-with-windows"
-          aria-describedby="start-with-windows-description"
-          checked={startWithWindows}
-          onCheckedChange={setStartWithWindows}
-          className="mt-0.5"
-        />
       </div>
 
       <div className="flex items-start gap-2 pt-1">
