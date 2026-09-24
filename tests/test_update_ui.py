@@ -67,9 +67,10 @@ class UpdateUITests(unittest.TestCase):
         expect(checkbox).to_be_checked()
         self.assertIsNone(self.last_message("saveSettings"))
         self.page.get_by_role("button", name="Cancel", exact=True).click()
-        self.assertEqual(self.last_message("close"), {"action": "close"})
+        self.expect_close_prompt()
+        self.page.get_by_role("button", name="Keep editing", exact=True).click()
+        self.assertIsNone(self.last_message("close"))
         self.assertIsNone(self.last_message("saveSettings"))
-        # The mock host leaves the dialog open, so exercise its Save payload too.
         self.page.get_by_role("button", name="Save", exact=True).click()
         self.assertTrue(self.last_message("saveSettings")["startWithWindows"])
         checkbox.focus()
@@ -96,6 +97,174 @@ class UpdateUITests(unittest.TestCase):
         return self.page.evaluate(
             "action => window.messages.filter(m => m.action === action).at(-1)",
             action)
+
+    def close_actions(self):
+        return self.page.evaluate("""() => window.messages.filter(
+            m => ['close', 'saveSettings'].includes(m.action))""")
+
+    def native_close(self):
+        self.page.evaluate("window.onCloseRequested()")
+
+    def expect_close_prompt(self):
+        dialog = self.page.get_by_role("alertdialog", name="Unsaved changes", exact=True)
+        expect(dialog).to_be_visible()
+        expect(dialog.get_by_text("Save changes before closing?", exact=True)).to_be_visible()
+        expect(self.page.get_by_role("alertdialog")).to_have_count(1)
+        self.assertEqual(self.close_actions(), [])
+        self.assertTrue(self.page.locator("#chromePath").evaluate(
+            "el => !!el.closest('[inert]')"))
+        return dialog
+
+    def reset_config(self):
+        self.page.reload()
+        expect(self.page.get_by_role("button", name="Save", exact=True)).to_be_visible()
+
+    def test_unchanged_configuration_closes_without_prompt(self):
+        for trigger in (lambda: self.page.get_by_role("button", name="Cancel", exact=True).click(),
+                        self.native_close, lambda: self.page.keyboard.press("Escape")):
+            self.reset_config()
+            trigger()
+            self.assertEqual(self.close_actions(), [{"action": "close"}])
+            expect(self.page.get_by_role("alertdialog")).to_have_count(0)
+
+    def test_each_setting_prompts_and_reverting_allows_close(self):
+        fields = (
+            ("#chromePath", r"C:\Other\chrome.exe", r"C:\Chrome\chrome.exe"),
+            ("#debugPort", "9333", "9222"),
+            ("#connectAddress", "127.0.0.2", "127.0.0.1"),
+            ("#statusCheckInterval", "120", "60"),
+            ("#start-with-windows", True, False),
+            ("#autoCheckForUpdates", True, False),
+        )
+        for selector, changed, original in fields:
+            with self.subTest(setting=selector):
+                self.reset_config()
+                field = self.page.locator(selector)
+                if isinstance(changed, bool):
+                    field.set_checked(changed)
+                else:
+                    field.fill(changed)
+                self.native_close()
+                self.expect_close_prompt()
+                self.native_close()  # Repeated X cannot bypass the question.
+                self.expect_close_prompt()
+                self.page.get_by_role("button", name="Keep editing").click()
+                expect(self.page.get_by_role("alertdialog")).to_have_count(0)
+                if isinstance(original, bool):
+                    expect(field).to_be_checked()
+                    field.set_checked(original)
+                else:
+                    expect(field).to_have_value(changed)
+                    field.fill(original)
+                self.page.get_by_role("button", name="Cancel", exact=True).click()
+                self.assertEqual(self.close_actions(), [{"action": "close"}])
+                expect(self.page.get_by_role("alertdialog")).to_have_count(0)
+
+    def test_browsing_to_a_different_chrome_path_counts_as_an_edit(self):
+        self.page.evaluate("window.onBrowseResult({path: 'D:\\\\Chrome\\\\chrome.exe'})")
+        self.native_close()
+        self.expect_close_prompt()
+
+    def test_prompt_keyboard_overlay_and_discard(self):
+        checkbox = self.page.get_by_label("Start with Windows", exact=True)
+        checkbox.check()
+        original_height = self.last_message("resize")["height"]
+        cancel = self.page.get_by_role("button", name="Cancel", exact=True)
+        cancel.click()
+        dialog = self.expect_close_prompt()
+        keep = dialog.get_by_role("button", name="Keep editing")
+        save = dialog.get_by_role("button", name="Save", exact=True)
+        expect(keep).to_be_focused()
+        self.page.keyboard.press("Tab")
+        expect(dialog.get_by_role("button", name="Discard")).to_be_focused()
+        self.page.keyboard.press("Tab")
+        expect(save).to_be_focused()
+        self.page.keyboard.press("Tab")
+        expect(keep).to_be_focused()
+        self.page.keyboard.press("Shift+Tab")
+        expect(save).to_be_focused()
+        self.assertEqual(dialog.evaluate(
+            "el => getComputedStyle(el.parentElement).backgroundColor"), "rgba(0, 0, 0, 0.35)")
+        self.assertEqual(self.last_message("resize")["height"], original_height)
+        self.page.mouse.click(8, 8)
+        self.expect_close_prompt()
+        self.page.keyboard.press("Escape")
+        expect(self.page.get_by_role("alertdialog")).to_have_count(0)
+        expect(checkbox).to_be_checked()
+        expect(cancel).to_be_focused()
+        self.page.keyboard.press("Escape")
+        dialog = self.expect_close_prompt()
+        dialog.get_by_role("button", name="Discard").click()
+        self.assertEqual(self.close_actions(), [{"action": "close"}])
+
+    def test_prompt_save_matches_normal_save(self):
+        for through_prompt in (False, True):
+            with self.subTest(through_prompt=through_prompt):
+                self.reset_config()
+                self.page.get_by_label("Start with Windows", exact=True).check()
+                self.page.get_by_label("Debug Port", exact=True).fill("9333")
+                scope = self.page
+                if through_prompt:
+                    self.native_close()
+                    scope = self.expect_close_prompt()
+                scope.get_by_role("button", name="Save", exact=True).click()
+                self.assertEqual(self.close_actions(), [{
+                    "action": "saveSettings", "chromePath": r"C:\Chrome\chrome.exe",
+                    "debugPort": 9333, "connectAddress": "127.0.0.1",
+                    "statusCheckInterval": 60, "startWithWindows": True,
+                    "autoCheckForUpdates": False,
+                }])
+
+    def test_invalid_prompt_save_returns_to_the_field_without_losing_edits(self):
+        for selector, invalid, valid, error in (
+            ("#debugPort", "70000", "9333", "Port must be between 1 and 65535"),
+            ("#statusCheckInterval", "4", "120", "Interval must be at least 5 seconds"),
+        ):
+            with self.subTest(setting=selector):
+                self.reset_config()
+                field = self.page.locator(selector)
+                field.fill(invalid)
+                self.page.get_by_label("Start with Windows", exact=True).check()
+                self.native_close()
+                self.expect_close_prompt().get_by_role("button", name="Save", exact=True).click()
+                expect(self.page.get_by_role("alertdialog")).to_have_count(0)
+                expect(self.page.get_by_text(error, exact=True)).to_be_visible()
+                expect(field).to_be_focused()
+                expect(field).to_have_value(invalid)
+                self.assertEqual(self.close_actions(), [])
+                field.fill(valid)
+                self.page.get_by_role("button", name="Save", exact=True).click()
+                self.assertTrue(self.last_message("saveSettings")["startWithWindows"])
+                self.assertIsNone(self.last_message("close"))
+
+    def test_unsaved_prompt_has_priority_over_update_results(self):
+        checkbox = self.page.get_by_label("Start with Windows", exact=True)
+        checkbox.check()
+        self.native_close()
+        self.expect_close_prompt()
+        self.result("newer", automatic=True)
+        self.expect_close_prompt()
+        self.page.get_by_role("button", name="Keep editing").click()
+        update = self.page.get_by_role("alertdialog", name="Update available", exact=True)
+        expect(update).to_be_visible()
+        self.assertEqual(update.evaluate(
+            "el => getComputedStyle(el.parentElement).backgroundColor"), "rgba(0, 0, 0, 0.35)")
+        self.native_close()
+        self.expect_close_prompt()
+        self.page.keyboard.press("Escape")
+        expect(update).to_be_visible()
+        update.get_by_role("button", name="Cancel", exact=True).click()
+        expect(self.page.get_by_role("alertdialog")).to_have_count(0)
+        expect(checkbox).to_be_checked()
+        self.assertEqual(self.close_actions(), [])
+
+    def test_update_only_changes_do_not_prompt_to_save(self):
+        self.result()
+        self.page.get_by_label("Reopen settings after update", exact=True).check()
+        self.page.get_by_role("alertdialog").get_by_role("button", name="Cancel").click()
+        self.native_close()
+        expect(self.page.get_by_role("alertdialog")).to_have_count(0)
+        self.assertEqual(self.close_actions(), [{"action": "close"}])
 
     def test_progress_format_red_style_and_cancellation(self):
         button = self.page.get_by_role("button", name="Update", exact=True)

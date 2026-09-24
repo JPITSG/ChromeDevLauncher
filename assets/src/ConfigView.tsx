@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import ConfigAlert from "./components/ConfigAlert";
 import {
   type ConfigData,
   type UpdateResult,
   saveSettings,
   browseFile,
   closeDialog,
+  onCloseRequested,
   checkForUpdate,
   cancelUpdateCheck,
   configReady,
@@ -64,6 +66,36 @@ export default function ConfigView({
   );
   const [reopenSettings, setReopenSettings] = useState(false);
   const automaticUpdateStarted = useRef(false);
+  const [closePrompt, setClosePrompt] = useState(false);
+  const hasChanges =
+    chromePath !== config.chromePath ||
+    debugPort !== String(config.debugPort) ||
+    connectAddress !== config.connectAddress ||
+    statusCheckInterval !== String(config.statusCheckInterval) ||
+    startWithWindows !== (config.startWithWindows ?? false) ||
+    autoCheckForUpdates !== (config.autoCheckForUpdates ?? true);
+
+  const handleRequestClose = useCallback(() => {
+    if (hasChanges) {
+      setClosePrompt(true);
+    } else {
+      closeDialog();
+    }
+  }, [hasChanges]);
+
+  // Install before configReady, and keep native close requests in sync with edits.
+  useLayoutEffect(() => onCloseRequested(handleRequestClose), [handleRequestClose]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !closePrompt && !updateAlert) {
+        event.preventDefault();
+        handleRequestClose();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [closePrompt, updateAlert, handleRequestClose]);
 
   useEffect(() => {
     const removeBrowseListener = onBrowseResult((result) => {
@@ -130,7 +162,13 @@ export default function ConfigView({
     }
 
     setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    const firstInvalidField = Object.keys(newErrors)[0];
+    if (firstInvalidField) {
+      setClosePrompt(false);
+      requestAnimationFrame(() => document.getElementById(firstInvalidField)?.focus());
+      return false;
+    }
+    return true;
   };
 
   function handleSave() {
@@ -187,233 +225,245 @@ export default function ConfigView({
   }
 
   return (
-    <div className="p-5 flex flex-col gap-3 max-w-md mx-auto text-xs">
-      <div className="space-y-1">
-        <Label>Chrome Executable Path</Label>
-        <div className="flex gap-1">
-          <Input
-            value={chromePath}
-            onChange={(e) => setChromePath(e.target.value)}
-            className="flex-1"
-          />
-          <Button variant="outline" size="sm" onClick={() => browseFile()}>
-            ...
-          </Button>
-        </div>
-      </div>
-
-      <div className="space-y-1">
-        <Label>Debug Port</Label>
-        <Input
-          type="number"
-          value={debugPort}
-          onChange={(e) => setDebugPort(e.target.value)}
-          min={1}
-          max={65535}
-        />
-        {errors.debugPort && (
-          <p className="text-red-500 text-xs">{errors.debugPort}</p>
-        )}
-      </div>
-
-      <div className="space-y-1">
-        <Label>Chrome IP Address</Label>
-        <Input
-          value={connectAddress}
-          onChange={(e) => setConnectAddress(e.target.value)}
-          placeholder="127.0.0.1"
-        />
-      </div>
-
-      <div className="space-y-1">
-        <Label>Status Check Interval (seconds)</Label>
-        <Input
-          type="number"
-          value={statusCheckInterval}
-          onChange={(e) => setStatusCheckInterval(e.target.value)}
-          min={5}
-        />
-        {errors.statusCheckInterval && (
-          <p className="text-red-500 text-xs">{errors.statusCheckInterval}</p>
-        )}
-      </div>
-
-      <div className="flex items-start gap-2 pt-1">
-        <Checkbox
-          id="start-with-windows"
-          aria-describedby="start-with-windows-description"
-          className="mt-0.5"
-          checked={startWithWindows}
-          onChange={(e) => setStartWithWindows(e.target.checked)}
-        />
-        <div className="space-y-0.5">
-          <Label htmlFor="start-with-windows" className="cursor-pointer">
-            Start with Windows
-          </Label>
-          <p
-            id="start-with-windows-description"
-            className="text-neutral-500 text-[11px] leading-snug"
-          >
-            Launches in the tray when you sign in to Windows.
-          </p>
-        </div>
-      </div>
-
-      <div className="flex items-start gap-2 pt-1">
-        <Checkbox
-          id="autoCheckForUpdates"
-          className="mt-0.5"
-          checked={autoCheckForUpdates}
-          onChange={(e) => setAutoCheckForUpdates(e.target.checked)}
-        />
-        <div className="space-y-0.5">
-          <Label htmlFor="autoCheckForUpdates" className="cursor-pointer">
-            Automatically check for updates
-          </Label>
-          <p className="text-neutral-500 text-[11px] leading-snug">
-            Checks at startup, whenever this dialog opens, and every 60 minutes.
-            Prompts only when a newer version is available.
-          </p>
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between gap-3 pt-1">
-        <span
-          className="select-none whitespace-nowrap text-[11px] leading-none tabular-nums text-neutral-400"
-          title="Application version"
-        >
-          v{__APP_VERSION__}
-        </span>
-        <div className="flex items-center gap-2">
-          <Button
-            variant={updateChecking ? "destructive" : "outline"}
-            size="sm"
-            className="min-w-[5rem] tabular-nums"
-            disabled={updateCancelling}
-            aria-label={
-              updateChecking ? "Stop update check and download" : undefined
-            }
-            title={
-              updateChecking ? "Stop update check and download" : undefined
-            }
-            onClick={handleUpdate}
-          >
-            {updateCancelling
-              ? "Stopping..."
-              : updateChecking
-                ? updateProgressPercent === null
-                  ? "Checking..."
-                  : `Checking (${updateProgressPercent}%)...`
-                : "Update"}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="min-w-[5rem]"
-            onClick={() => closeDialog()}
-          >
-            Cancel
-          </Button>
-          <Button size="sm" className="min-w-[5rem]" onClick={handleSave}>
-            Save
-          </Button>
-        </div>
-      </div>
-
-      {updateAlert && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
-          <div
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="update-alert-title"
-            aria-describedby="update-alert-message"
-            className="w-full max-w-sm space-y-3 rounded-lg border border-neutral-200 bg-white p-4 shadow-xl"
-          >
-            <div className="space-y-1">
-              <h2 id="update-alert-title" className="text-sm font-semibold">
-                {updateAlert.title}
-              </h2>
-              <p
-                id="update-alert-message"
-                className="text-xs leading-relaxed text-neutral-600"
-              >
-                {updateAlert.message}
-              </p>
-            </div>
-            {updateAlert.currentVersion && updateAlert.remoteVersion && (
-              <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs">
-                <dt className="text-neutral-500">Current version</dt>
-                <dd className="font-medium tabular-nums text-neutral-900">
-                  {updateAlert.currentVersion}
-                </dd>
-                <dt className="text-neutral-500">Remote version</dt>
-                <dd className="font-medium tabular-nums text-neutral-900">
-                  {updateAlert.remoteVersion}
-                </dd>
-              </dl>
-            )}
-            {(updateAlert.status === "newer" || updateAlert.status === "same") && (
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id="reopenSettings"
-                  checked={reopenSettings}
-                  disabled={updateChecking}
-                  onChange={(e) => setReopenSettings(e.target.checked)}
-                />
-                <Label htmlFor="reopenSettings" className="cursor-pointer">
-                  Reopen settings after update
-                </Label>
-              </div>
-            )}
-            <div className="flex justify-end gap-2">
-              {updateAlert.status === "newer" && updateAlert.automatic && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={updateChecking}
-                  onClick={handleIgnoreUpdateVersion}
-                >
-                  Ignore this version
-                </Button>
-              )}
-              {(updateAlert.status === "newer" ||
-                updateAlert.status === "same") && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  autoFocus
-                  disabled={updateChecking}
-                  onClick={handleDismissUpdate}
-                >
-                  Cancel
-                </Button>
-              )}
-              <Button
-                size="sm"
-                autoFocus={
-                  updateAlert.status !== "newer" &&
-                  updateAlert.status !== "same"
-                }
-                disabled={updateChecking}
-                onClick={
-                  updateAlert.status === "newer" ||
-                  updateAlert.status === "same"
-                    ? handleInstallUpdate
-                    : handleDismissUpdate
-                }
-              >
-                {updateChecking
-                  ? "Starting..."
-                  : updateAlert.status === "same"
-                    ? "Force update"
-                    : updateAlert.status === "newer"
-                      ? "Update"
-                      : "OK"}
-              </Button>
-            </div>
+    <>
+      <div inert={closePrompt || !!updateAlert} className="p-5 flex flex-col gap-3 max-w-md mx-auto text-xs">
+        <div className="space-y-1">
+          <Label htmlFor="chromePath">Chrome Executable Path</Label>
+          <div className="flex gap-1">
+            <Input
+              id="chromePath"
+              value={chromePath}
+              onChange={(e) => setChromePath(e.target.value)}
+              className="flex-1"
+            />
+            <Button variant="outline" size="sm" onClick={() => browseFile()}>
+              ...
+            </Button>
           </div>
         </div>
+
+        <div className="space-y-1">
+          <Label htmlFor="debugPort">Debug Port</Label>
+          <Input
+            id="debugPort"
+            type="number"
+            value={debugPort}
+            onChange={(e) => setDebugPort(e.target.value)}
+            min={1}
+            max={65535}
+          />
+          {errors.debugPort && (
+            <p className="text-red-500 text-xs">{errors.debugPort}</p>
+          )}
+        </div>
+
+        <div className="space-y-1">
+          <Label htmlFor="connectAddress">Chrome IP Address</Label>
+          <Input
+            id="connectAddress"
+            value={connectAddress}
+            onChange={(e) => setConnectAddress(e.target.value)}
+            placeholder="127.0.0.1"
+          />
+        </div>
+
+        <div className="space-y-1">
+          <Label htmlFor="statusCheckInterval">Status Check Interval (seconds)</Label>
+          <Input
+            id="statusCheckInterval"
+            type="number"
+            value={statusCheckInterval}
+            onChange={(e) => setStatusCheckInterval(e.target.value)}
+            min={5}
+          />
+          {errors.statusCheckInterval && (
+            <p className="text-red-500 text-xs">{errors.statusCheckInterval}</p>
+          )}
+        </div>
+
+        <div className="flex items-start gap-2 pt-1">
+          <Checkbox
+            id="start-with-windows"
+            aria-describedby="start-with-windows-description"
+            className="mt-0.5"
+            checked={startWithWindows}
+            onChange={(e) => setStartWithWindows(e.target.checked)}
+          />
+          <div className="space-y-0.5">
+            <Label htmlFor="start-with-windows" className="cursor-pointer">
+              Start with Windows
+            </Label>
+            <p
+              id="start-with-windows-description"
+              className="text-neutral-500 text-[11px] leading-snug"
+            >
+              Launches in the tray when you sign in to Windows.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-start gap-2 pt-1">
+          <Checkbox
+            id="autoCheckForUpdates"
+            className="mt-0.5"
+            checked={autoCheckForUpdates}
+            onChange={(e) => setAutoCheckForUpdates(e.target.checked)}
+          />
+          <div className="space-y-0.5">
+            <Label htmlFor="autoCheckForUpdates" className="cursor-pointer">
+              Automatically check for updates
+            </Label>
+            <p className="text-neutral-500 text-[11px] leading-snug">
+              Checks at startup, whenever this dialog opens, and every 60 minutes.
+              Prompts only when a newer version is available.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 pt-1">
+          <span
+            className="select-none whitespace-nowrap text-[11px] leading-none tabular-nums text-neutral-400"
+            title="Application version"
+          >
+            v{__APP_VERSION__}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              variant={updateChecking ? "destructive" : "outline"}
+              size="sm"
+              className="min-w-[5rem] tabular-nums"
+              disabled={updateCancelling}
+              aria-label={
+                updateChecking ? "Stop update check and download" : undefined
+              }
+              title={
+                updateChecking ? "Stop update check and download" : undefined
+              }
+              onClick={handleUpdate}
+            >
+              {updateCancelling
+                ? "Stopping..."
+                : updateChecking
+                  ? updateProgressPercent === null
+                    ? "Checking..."
+                    : `Checking (${updateProgressPercent}%)...`
+                  : "Update"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="min-w-[5rem]"
+              onClick={handleRequestClose}
+            >
+              Cancel
+            </Button>
+            <Button size="sm" className="min-w-[5rem]" onClick={handleSave}>
+              Save
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {closePrompt ? (
+        <ConfigAlert
+          key="save"
+          id="save-alert"
+          title="Unsaved changes"
+          message="Save changes before closing?"
+          onEscape={() => setClosePrompt(false)}
+        >
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setClosePrompt(false)}>
+              Keep editing
+            </Button>
+            <Button variant="outline" size="sm" onClick={closeDialog}>
+              Discard
+            </Button>
+            <Button size="sm" onClick={handleSave}>
+              Save
+            </Button>
+          </div>
+        </ConfigAlert>
+      ) : updateAlert && (
+        <ConfigAlert
+          key="update"
+          id="update-alert"
+          title={updateAlert.title}
+          message={updateAlert.message}
+        >
+          {updateAlert.currentVersion && updateAlert.remoteVersion && (
+            <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs">
+              <dt className="text-neutral-500">Current version</dt>
+              <dd className="font-medium tabular-nums text-neutral-900">
+                {updateAlert.currentVersion}
+              </dd>
+              <dt className="text-neutral-500">Remote version</dt>
+              <dd className="font-medium tabular-nums text-neutral-900">
+                {updateAlert.remoteVersion}
+              </dd>
+            </dl>
+          )}
+          {(updateAlert.status === "newer" || updateAlert.status === "same") && (
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="reopenSettings"
+                checked={reopenSettings}
+                disabled={updateChecking}
+                onChange={(e) => setReopenSettings(e.target.checked)}
+              />
+              <Label htmlFor="reopenSettings" className="cursor-pointer">
+                Reopen settings after update
+              </Label>
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            {updateAlert.status === "newer" && updateAlert.automatic && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={updateChecking}
+                onClick={handleIgnoreUpdateVersion}
+              >
+                Ignore this version
+              </Button>
+            )}
+            {(updateAlert.status === "newer" ||
+              updateAlert.status === "same") && (
+              <Button
+                variant="outline"
+                size="sm"
+                autoFocus
+                disabled={updateChecking}
+                onClick={handleDismissUpdate}
+              >
+                Cancel
+              </Button>
+            )}
+            <Button
+              size="sm"
+              autoFocus={
+                updateAlert.status !== "newer" &&
+                updateAlert.status !== "same"
+              }
+              disabled={updateChecking}
+              onClick={
+                updateAlert.status === "newer" ||
+                updateAlert.status === "same"
+                  ? handleInstallUpdate
+                  : handleDismissUpdate
+              }
+            >
+              {updateChecking
+                ? "Starting..."
+                : updateAlert.status === "same"
+                  ? "Force update"
+                  : updateAlert.status === "newer"
+                    ? "Update"
+                    : "OK"}
+            </Button>
+          </div>
+        </ConfigAlert>
       )}
-    </div>
+    </>
   );
 }

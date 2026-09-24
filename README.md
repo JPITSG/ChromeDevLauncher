@@ -38,6 +38,12 @@ A Windows 10+ system tray utility that launches Chrome with remote debugging ena
 - **Start with Windows** - Launches in the tray when you sign in to Windows (off by default)
 - **Automatically Check for Updates** - Checks at startup, whenever Configure opens, and every 60 minutes (enabled by default)
 
+Closing with unsaved changes asks **“Save changes before closing?”** with
+**Keep editing**, **Discard**, and **Save**, using the same dark overlay as
+update prompts. This covers Cancel, the title-bar Close button, Alt+F4, and
+Escape. Keep editing or Escape returns to your edits; Save validates and saves
+them, and Discard closes without saving. Reverting all edits closes normally.
+
 Settings are stored in the Windows Registry at:
 ```
 HKEY_CURRENT_USER\SOFTWARE\JPIT\ChromeDevLauncher
@@ -105,13 +111,14 @@ Output: `release/ChromeDevLauncher.exe`
 
 ## Verification
 
-After building, run the focused updater, startup and dialog frame checks on
+After building, run the focused updater, startup and dialog checks on
 Linux (Python 3 and GCC):
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_updater.py' -v
 python3 -m unittest discover -s tests -p 'test_startup.py' -v
 python3 -m unittest discover -s tests -p 'test_fixed_frame.py' -v
+python3 -m unittest discover -s tests -p 'test_config_close.py' -v
 ```
 
 The frame check compiles the configuration dialog's fixed-size frame handling
@@ -120,7 +127,9 @@ and corner drags, the Size and Maximize commands, and the track size that also
 stops Snap) and checks that every place the app sizes the dialog pins the size
 first.
 
-With Python Playwright and Chromium installed, test the built configuration UI:
+With Python Playwright and Chromium installed, test the built configuration UI,
+including unsaved edits, close requests, keyboard focus, validation, and update
+prompt overlap:
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_update_ui.py' -v

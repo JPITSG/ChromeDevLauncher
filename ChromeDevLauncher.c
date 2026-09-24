@@ -423,6 +423,7 @@ static BOOL g_webviewWindowShown = FALSE;
 static SIZE g_webviewFrameSize = {0, 0};
 static BOOL g_configChanged = FALSE;
 static BOOL g_configViewReady = FALSE;
+static BOOL g_configCloseApproved = FALSE;
 
 typedef HRESULT (STDAPICALLTYPE *PFN_CreateCoreWebView2EnvironmentWithOptions)(
     LPCWSTR browserExecutableFolder, LPCWSTR userDataFolder, void* options,
@@ -2632,6 +2633,7 @@ static HRESULT STDMETHODCALLTYPE MsgReceived_Invoke(ICoreWebView2WebMessageRecei
             json_get_bool(msg, "autoCheckForUpdates", TRUE);
         g_configChanged = TRUE;
 
+        g_configCloseApproved = TRUE;
         PostMessage(g_webviewHwnd, WM_CLOSE, 0, 0);
     } else if (strcmp(action, "browse") == 0) {
         OPENFILENAMEW ofn = {0};
@@ -2650,6 +2652,8 @@ static HRESULT STDMETHODCALLTYPE MsgReceived_Invoke(ICoreWebView2WebMessageRecei
             webview_push_browse_result(szFile);
         }
     } else if (strcmp(action, "close") == 0) {
+        // The configuration UI sends this only after checking for unsaved edits.
+        g_configCloseApproved = TRUE;
         PostMessage(g_webviewHwnd, WM_CLOSE, 0, 0);
     } else if (strcmp(action, "resize") == 0) {
         int contentHeight = 0;
@@ -2689,6 +2693,17 @@ static HRESULT STDMETHODCALLTYPE MsgReceived_Invoke(ICoreWebView2WebMessageRecei
 // WebView2 window
 // ============================================================================
 
+static BOOL RequestConfigClose(void) {
+    if (!g_configViewReady || !g_webviewView ||
+        g_configCloseApproved || g_updateInstallReady) {
+        return FALSE;
+    }
+    // X, Alt+F4 and the system menu all arrive here through WM_CLOSE.
+    // Keep the window alive until the UI saves or explicitly approves closing.
+    webview_execute_script(L"window.onCloseRequested()");
+    return TRUE;
+}
+
 static LRESULT CALLBACK WebViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     LRESULT frameResult;
     if (FixedFrameMessage(hwnd, msg, wParam, lParam, &g_webviewFrameSize, &frameResult)) {
@@ -2713,6 +2728,7 @@ static LRESULT CALLBACK WebViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             break;
 
         case WM_CLOSE:
+            if (RequestConfigClose()) return 0;
             g_webviewWindowShown = FALSE;
             KillTimer(hwnd, ID_TIMER_WEBVIEW_SHOW_FALLBACK);
             if (g_webviewController) {
@@ -2744,6 +2760,7 @@ static LRESULT CALLBACK WebViewWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             g_webviewHwnd = NULL;
             g_webviewWindowShown = FALSE;
             g_configViewReady = FALSE;
+            g_configCloseApproved = FALSE;
             KillTimer(hwnd, ID_TIMER_WEBVIEW_SHOW_FALLBACK);
             if (g_updateInstallReady) PostQuitMessage(0);
             return 0;
@@ -2805,6 +2822,7 @@ static void ShowWebViewDialog(int width, int height) {
     FixedFrameInit(g_webviewHwnd, &g_webviewFrameSize);
     g_webviewWindowShown = FALSE;
     g_configViewReady = FALSE;
+    g_configCloseApproved = FALSE;
     SetTimer(g_webviewHwnd, ID_TIMER_WEBVIEW_SHOW_FALLBACK, WEBVIEW_SHOW_FALLBACK_DELAY_MS, NULL);
 
     // Build user data folder path
@@ -3584,6 +3602,7 @@ static void PerformCleanup(void) {
     DiscardPreparedUpdate();
 
     // Close WebView2 dialog if open
+    g_configCloseApproved = TRUE;  // Application shutdown must finish synchronously.
     if (g_webviewHwnd) SendMessage(g_webviewHwnd, WM_CLOSE, 0, 0);
 
     // Remove tray icon
